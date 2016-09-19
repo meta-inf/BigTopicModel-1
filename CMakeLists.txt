@@ -1,7 +1,8 @@
 cmake_minimum_required (VERSION 2.6)
 project (BigTopicModel)
 
-set(CMAKE_CXX_FLAGS "-Wall -std=c++11 -g -pthread -Ofast -march=native -inline-factor=400")
+# set(CMAKE_CXX_FLAGS "-Wall -std=c++11 -g -pthread -Ofast -march=native -inline-factor=400")
+set(CMAKE_CXX_FLAGS "-Wall -std=c++11 -g -pthread -Ofast -march=native -fopenmp -lgflags")
 
 find_package(OpenMP)
 find_package(MPI)

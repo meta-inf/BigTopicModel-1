@@ -88,7 +88,7 @@ void Count() {
                 int d_part = rand() % doc_parts;
                 #pragma omp critical
                 {
-                    doc_map[id] = MappedEntry{d_part, -1};
+                    doc_map[id] = MappedEntry{d_part, static_cast<size_t>(-1)};
                     num_docs_in_part[d_part]++;
                 }
             });
