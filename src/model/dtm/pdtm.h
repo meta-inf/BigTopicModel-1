@@ -16,17 +16,18 @@ class pDTM {
 
     // TODO: Init stuff below
 	MPI_Comm commRow;
-	int procId, nProcRows, nProcCols;
-	int N_topics, N_batch;
+	int procId, nProcRows, nProcCols, pRowId, pColId;
+	int N_glob_vocab, N_topics, N_batch;
 
 	vector<size_t> nEpDocs;
 	LocalCorpus corpus;
-	vector<Arr> localPhi;
+	vector<Arr> localPhi, cwk;
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
 	vector<Arr> globEta;
 	Arr sumEta, localEta, alpha;
-    DCMSparse cdk, cwk;
+    DCMSparse cdk;
+//	DCMSparse cwk;
 	vector<rand_data> rd_data;
     // TODO: Init stuff above.
 
@@ -36,9 +37,9 @@ class pDTM {
 	int iter;
 
 	void IterInit(int t);
-	void UpdateZ(int th, int nTh);
+	void UpdateZ(int thId, int nTh);
 	void UpdateEta(int th, int nTh);
-    void InitWordAlias();
+    void InitZ();
 	void UpdatePhi(int th, int nTh);
 	void UpdateAlpha();
 
