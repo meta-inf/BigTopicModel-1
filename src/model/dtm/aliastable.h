@@ -22,40 +22,38 @@ struct AliasTable {
 	std::vector<double> log_prob;
 	int n;
 
-	rand_data *rd_data_;
-
 // public:
 	// For vector::resize. Don't use.
-	AliasTable () { rd_data_ = nullptr; }
-	AliasTable (const AliasTable &v) { rd_data_ = nullptr; }
+	AliasTable () { }
+	AliasTable (const AliasTable &v) { }
 
 	// @param n: number of possible outcomes
 	inline void Init (int n);
 
 	// @return: integer in {0, ..., n-1}
-	inline int Sample ();
+	inline int Sample (rand_data *rd);
 
 	// @param log_prob: unnormalized log probability mass,
 	//                  of any class supporting `double operator[]`
 	template <typename array>
-	inline void Rebuild (rand_data *rd, const array &log_prob);
+	inline void Rebuild (const array &log_prob);
 };
 
 void AliasTable::Init (int n) {
 	this->n = n;
 }
 
-int AliasTable::Sample () {
-	int j = irand(rd_data_, 0, n);
-	if (urand(rd_data_) < n * vp[j])
+int AliasTable::Sample (rand_data *rd) {
+	int j = irand(rd, 0, n);
+    assert(j >= 0 && j < n);
+	if (urand(rd) < n * vp[j])
 		return vi[j];
 	else
 		return vh[j];
 }
 
 template <typename array>
-void AliasTable::Rebuild (rand_data *rd, const array &log_prob) {
-	rd_data_ = rd;
+void AliasTable::Rebuild (const array &log_prob) {
 
 	// Calc probability masses
 	std::vector<double> prob(n + 1);
@@ -75,7 +73,7 @@ void AliasTable::Rebuild (rand_data *rd, const array &log_prob) {
 
 	this->log_prob = prob;
 	for (int i = 0; i < n; ++i) {
-		this->log_prob[i] = log(prob[i]);
+		this->log_prob[i] = (double)log(prob[i]);
 	}
 
 	double invn = 1.0 / n;

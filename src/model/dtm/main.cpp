@@ -1,11 +1,20 @@
+/*
+ * TODO: to test
+ * - Single proc single thread
+ * - S proc multiple thread
+ * - Single row m th
+ * - Single col m th
+ * - M m
+ */
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include "corpus.h"
-#include "dtm.h"
-#include "utils.h"
+#include "lcorpus.h"
+#include "pdtm.h"
 using namespace std;
 
-DEFINE_string(train, "./data/nips.hb.tr.corpus", "training corpus");
+DEFINE_string(corpus_prefix,
+              "/home/dc/wkspace/btm_data/nips.hb",
+              "prefix for corpus and dict");
 DEFINE_string(test_held, "./data/nips.hb.th.corpus", "test corpus");
 DEFINE_string(test_observed, "./data/nips.hb.to.corpus", "test corpus");
 DEFINE_string(dict, "./data/nips.hb.dict", "dictionary file");
@@ -24,42 +33,30 @@ DEFINE_double(dump_every, -1, "Time between dumps. <=0 -> never");
 DECLARE_double(sgld_phi_a);
 DECLARE_double(sgld_eta_a);
 
+DEFINE_int32(n_vocab, 8000, "");
+DEFINE_int32(proc_rows, 1, "");
+DEFINE_int32(proc_cols, 1, "");
+
 int main (int argc, char *argv[]) {
 	
 	gflags::ParseCommandLineFlags(&argc, &argv, true);
 	google::InitGoogleLogging(argv[0]);
 
-	Corpus c_tr(FLAGS_train, FLAGS_dict);
-	Corpus c_th(FLAGS_test_held, FLAGS_dict);
-	Corpus c_to(FLAGS_test_observed, FLAGS_dict);
-	assert(c_tr.K_vocab == c_to.K_vocab);
+    // Init MPI and row comm
+    int n_procs, proc_id;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &n_procs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &proc_id);
+    m_assert(n_procs == FLAGS_proc_rows * FLAGS_proc_cols);
 
-	if (FLAGS_trunc_input > 0) {
-		c_tr.epochs.erase(c_tr.epochs.begin() + FLAGS_trunc_input, c_tr.epochs.end());
-		c_th.epochs.erase(c_th.epochs.begin() + FLAGS_trunc_input, c_th.epochs.end());
-		c_to.epochs.erase(c_to.epochs.begin() + FLAGS_trunc_input, c_to.epochs.end());
-	}
+    // TODO: load dict, th, to
+    string corp_train = FLAGS_corpus_prefix + ".tr.corpus";
+    string corp_theld = FLAGS_corpus_prefix + ".th.corpus";
+    string corp_tobsv = FLAGS_corpus_prefix + ".to.corpus";
+    string dict = FLAGS_corpus_prefix + ".dict";
 
-	if (FLAGS_init_with_ctm) {
-		LOG() << "Initializing single-epoch CTM ..." << endl;
-		auto c_tr0 = Corpus::Merged(c_tr);
-		auto c_th0 = Corpus::Merged(c_th);
-		auto c_to0 = Corpus::Merged(c_to);
-		DTM ctm(c_tr0, c_th0, c_to0, FLAGS_init_ctm_iter, FLAGS_report_every * 2, 0, nullptr);
-		FLAGS_sgld_phi_a /= c_tr.epochs.size();
-		FLAGS_sgld_eta_a /= c_tr.epochs.size();
-		ctm.Infer();
-		FLAGS_sgld_phi_a *= c_tr.epochs.size();
-		FLAGS_sgld_eta_a *= c_tr.epochs.size();
-		LOG() << "\nFitting DTM ..." << endl;
-		DTM dtm(c_tr, c_th, c_to, FLAGS_n_iters, FLAGS_report_every, FLAGS_dump_every,
-				&ctm.sample_[ctm.cur_sample_idx_][0]);
-		dtm.Infer();
-	}
-	else {
-		DTM dtm(c_tr, c_th, c_to, FLAGS_n_iters, FLAGS_report_every, FLAGS_dump_every, nullptr);
-		dtm.Infer();
-	}
+    pDTM dtm(LocalCorpus(corp_train), FLAGS_n_vocab, proc_id, FLAGS_proc_rows, FLAGS_proc_cols);
+	dtm.Infer();
 
 	return 0;
 }

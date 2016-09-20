@@ -10,13 +10,12 @@ struct Token {
 struct LocalCorpus {
 	int ep_s, ep_e; // [s, e), same below
 	struct Doc {
-		int rank; // rank is global in a ep / row
 		vector<Token> tokens;
 	};
 	vector<vector<Doc>> docs;
 	int vocab_s, vocab_e; 
 
-	void Load(const std::string &fileName);
+    LocalCorpus(const std::string &fileName);
 };
 
 #endif

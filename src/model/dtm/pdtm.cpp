@@ -6,7 +6,6 @@
 //
 
 #include "pdtm.h"
-#include "aliastable.h"
 #include <thread>
 using namespace std;
 
@@ -18,7 +17,7 @@ DEFINE_int32(n_mh_steps, 16, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_mh_thin, 1, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_infer_burn_in, 16, "number of burn-in steps in test");
 DEFINE_int32(n_infer_samples, 1, "number of samples used in test");
-DEFINE_int32(n_threads, 2, "number of threads used");
+DEFINE_int32(n_threads, 1, "number of threads used");
 DEFINE_int32(n_topics, 50, "number of topics");
 DEFINE_int32(n_doc_batch, 60, "implemented");
 DEFINE_bool(psgld, false, "pSGLD with RMSProp for Phi");
@@ -108,7 +107,7 @@ void SampleBatchId (vector<int> *dst, int n_total, int n_batch, rand_data *rd) {
     }
 }
 
-inline size_t cva_row_sum(const CVA<SpEntry>::Row &row) {
+inline size_t cva_row_sum(CVA<SpEntry>::Row &row) {
     size_t ret = 0;
     for (const auto &e: row) ret += e.v;
     return ret;
@@ -167,7 +166,7 @@ void pDTM::IterInit(int iter) {
                 MPI_DOUBLE, procId + nProcCols, iter * 4,
                 MPI_COMM_WORLD, &status);
         assert(e == MPI_SUCCESS);
-    }
+    };
     // Break blocking chain
     if (pRowId & 1) {
         exTp1(); exTm1();
@@ -179,7 +178,7 @@ void pDTM::IterInit(int iter) {
 
     // {{{ Sample batches
     vector<int> buff;
-    buff.resize((size_t)N_batch * corpus.docs.size());
+    buff.resize((size_t)2 * N_batch * corpus.docs.size());
     if (pColId == 0) {
         for (int i = 0, j = 0; i < corpus.docs.size(); ++i) {
             vector<int> tmp;
@@ -204,14 +203,14 @@ void pDTM::IterInit(int iter) {
 
 void pDTM::Infer() {
     vector<thread> threads((size_t)FLAGS_n_threads);
-    vector<double> etaBuff(N_batch * size_t(corpus.ep_e - corpus.ep_s));
+    vector<double> etaBuff(N_batch * size_t(corpus.ep_e - corpus.ep_s) * N_topics);
     for (int t = 0; t < FLAGS_n_iters; ++t) {
         IterInit(t);
 
         // Z
         InitZ();
         for (int _ = 0; _ < FLAGS_n_threads; ++_)
-            threads[_] = thread(UpdateZ, this, _, FLAGS_n_threads);
+            threads[_] = thread(&pDTM::UpdateZ, this, _, FLAGS_n_threads);
         for (int _ = 0; _ < FLAGS_n_threads; ++_)
             threads[_].join();
 
@@ -220,7 +219,7 @@ void pDTM::Infer() {
 
         // Eta
         for (int _ = 0; _ < FLAGS_n_threads; ++_)
-            threads[_] = thread(UpdateEta, this, _, FLAGS_n_threads);
+            threads[_] = thread(&pDTM::UpdateEta, this, _, FLAGS_n_threads);
         for (int _ = 0; _ < FLAGS_n_threads; ++_)
             threads[_].join();
 
@@ -235,13 +234,16 @@ void pDTM::Infer() {
                     double nv = etaBuff[eb_i++];
                     sumEta(d.first, i) += nv - globEta[d.first](d.second, i);
                     globEta[d.first](d.second, i) = nv;
+                    if (isnan(nv)) {
+                        assert(false);
+                    }
                 }
             }
         });
 
         // Phi
         for (int _ = 0; _ + 1 < FLAGS_n_threads; ++_)
-            threads[_] = thread(UpdatePhi, this, _, FLAGS_n_threads - 1);
+            threads[_] = thread(&pDTM::UpdatePhi, this, _, FLAGS_n_threads - 1);
         for (int _ = 0; _ < FLAGS_n_threads; ++_)
             threads[_].join();
 
@@ -321,6 +323,7 @@ void pDTM::UpdateEta(int kTh, int nTh) {
     // Load localEta
     for (size_t di = b_s; di < b_e; ++di) {
         localEta.row(di) = globEta[localBatch[di].first].row(localBatch[di].second);
+        m_assert(localEta.row(di).hasNaN() == false); // FIXME
     }
 
     // do SGLD
@@ -348,6 +351,9 @@ void pDTM::UpdateEta(int kTh, int nTh) {
                 double g_prior = inv_sig_eta2 * (alpha(ep_di+1, i) - eta[i]);
                 double g_post2 = -eta_softmax[i] * cdk_sum;
                 eta[i] += normal(&rd_data[kTh]) * sq_eps + (eps / 2) * (g_prior + g_post2);
+                if (isnan(eta[i])) {
+                    assert(false);
+                }
             }
             // 2. Accumulate cdk
             for (const auto &e: cdk) {
@@ -428,7 +434,7 @@ void pDTM::InitZ() {
                 for (int k = 0; k < N_topics; ++k) {
                     localPhiNormalized[e](k, v_rel) = localPhi[e](k, v_rel) - localPhiZ(e, k);
                 }
-                altWord[e][v_rel].Rebuild(&rd_data[kTh], localPhiNormalized[e].col(v_rel));
+                altWord[e][v_rel].Rebuild(localPhiNormalized[e].col(v_rel));
             }
     };
     vector<thread> threads(FLAGS_n_threads);
@@ -456,24 +462,24 @@ void pDTM::UpdateZ(int thId, int nTh) {
         const auto &log_pwt = localPhiNormalized[ep];
 
         // Init doc proposal
-        alt_doc.Rebuild(&rd_data[thId], localEta.row(batch_id));
+        alt_doc.Rebuild(localEta.row(batch_id));
 
         // M-H
         for (const auto &tok: corpus.docs[ep][rank].tokens) {
             int w_rel = tok.w - corpus.vocab_s;
             assert(tok.w >= corpus.vocab_s && tok.w < corpus.vocab_e);
 
-            int z0 = altWord[ep][w_rel].Sample();
+            int z0 = altWord[ep][w_rel].Sample(&rd_data[thId]);
             for (int t = 0, _ = 0; t < tok.f; ++t) {
                 for (int _steps = t ? FLAGS_n_mh_thin : FLAGS_n_mh_steps; _steps--; ++_) {
                     int z1;
                     double logA;
                     if (!(_ & 1)) { // doc proposal
-                        z1 = alt_doc.Sample();
+                        z1 = alt_doc.Sample(&rd_data[thId]);
                         logA = log_pwt(z1, w_rel) - log_pwt(z0, w_rel);
                     }
                     else { // word proposal
-                        z1 = altWord[ep][w_rel].Sample();
+                        z1 = altWord[ep][w_rel].Sample(&rd_data[thId]);
                         logA = localEta(batch_id, z1) - localEta(batch_id, z0);
                     }
                     if (logA >= 0 || urand(&rd_data[thId]) < exp(logA)) {
@@ -487,3 +493,4 @@ void pDTM::UpdateZ(int thId, int nTh) {
         }
     }
 }
+

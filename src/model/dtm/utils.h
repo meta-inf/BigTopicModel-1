@@ -5,7 +5,6 @@
 #ifndef DTM_UTILS_H
 #define DTM_UTILS_H
 
-
 #include <vector>
 #include <fstream>
 #include <iostream>
@@ -32,7 +31,7 @@ using std::pair;
 #define m_assert(exp) do {\
 	if (!(exp)) { \
 		fprintf(stderr, "%s() line %d: assertion `%s` failed.\n", __func__, __LINE__, #exp);\
-		abort();\
+        throw std::runtime_error("assertion failed");\
 	} } while (0)\
 
 #define ZEROS(r,c) ArrayXXd::Zero(r,c)
