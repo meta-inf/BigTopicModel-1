@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="BookmarkManager">
+    <bookmark url="file://$PROJECT_DIR$/pdtm.cpp" line="590" mnemonic="4" />
+  </component>
   <component name="CMakeRunConfigurationManager" shouldGenerate="true" assignedExecutableTargets="true" buildAllGenerated="true">
     <generated>
       <config projectName="btm_dtm" targetName="btm_dtm" />
@@ -33,14 +36,35 @@
       <file leaf-file-name="pdtm.cpp" pinned="false" current-in-tab="true">
         <entry file="file://$PROJECT_DIR$/pdtm.cpp">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="4404">
-              <caret line="471" column="40" selection-start-line="471" selection-start-column="40" selection-end-line="471" selection-end-column="40" />
+            <state relative-caret-position="81">
+              <caret line="3" column="0" selection-start-line="3" selection-start-column="0" selection-end-line="3" selection-end-column="0" />
               <folding>
-                <element signature="e#89#106#0" expanded="true" />
-                <element signature="e#4232#4244#0" expanded="true" />
-                <element signature="e#9068#11205#0" expanded="false" />
-                <element signature="e#11207#13394#0" expanded="false" />
+                <element signature="e#5312#5324#0" expanded="true" />
+                <element signature="e#5928#9293#0" expanded="false" />
+                <element signature="e#11146#13290#0" expanded="false" />
               </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="pdtm.h" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/pdtm.h">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="567">
+              <caret line="59" column="8" selection-start-line="59" selection-start-column="8" selection-end-line="59" selection-end-column="8" />
+              <folding>
+                <element signature="e#84#101#0" expanded="true" />
+              </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="rec.txt" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/rec.txt">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="108">
+              <caret line="4" column="4" selection-start-line="4" selection-start-column="4" selection-end-line="4" selection-end-column="4" />
+              <folding />
             </state>
           </provider>
         </entry>
@@ -59,21 +83,11 @@
           </provider>
         </entry>
       </file>
-      <file leaf-file-name="pdtm.h" pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/pdtm.h">
-          <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="621">
-              <caret line="44" column="0" selection-start-line="44" selection-start-column="0" selection-end-line="44" selection-end-column="0" />
-              <folding />
-            </state>
-          </provider>
-        </entry>
-      </file>
       <file leaf-file-name="main.cpp" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/main.cpp">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="678">
-              <caret line="61" column="0" selection-start-line="61" selection-start-column="0" selection-end-line="61" selection-end-column="0" />
+            <state relative-caret-position="324">
+              <caret line="30" column="0" selection-start-line="30" selection-start-column="0" selection-end-line="30" selection-end-column="0" />
               <folding>
                 <element signature="e#134#160#0" expanded="true" />
               </folding>
@@ -84,8 +98,8 @@
       <file leaf-file-name="lcorpus.cpp" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/lcorpus.cpp">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="378">
-              <caret line="14" column="25" selection-start-line="14" selection-start-column="25" selection-end-line="14" selection-end-column="25" />
+            <state relative-caret-position="567">
+              <caret line="21" column="29" selection-start-line="21" selection-start-column="29" selection-end-line="21" selection-end-column="29" />
               <folding />
             </state>
           </provider>
@@ -94,8 +108,8 @@
       <file leaf-file-name="lcorpus.h" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/lcorpus.h">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="486">
-              <caret line="18" column="0" selection-start-line="18" selection-start-column="0" selection-end-line="18" selection-end-column="0" />
+            <state relative-caret-position="405">
+              <caret line="15" column="32" selection-start-line="15" selection-start-column="32" selection-end-line="15" selection-end-column="32" />
               <folding />
             </state>
           </provider>
@@ -129,12 +143,13 @@
     <option name="CHANGED_PATHS">
       <list>
         <option value="$PROJECT_DIR$/utils.h" />
-        <option value="$PROJECT_DIR$/lcorpus.h" />
         <option value="$PROJECT_DIR$/CMakeLists.txt" />
+        <option value="$PROJECT_DIR$/aliastable.h" />
+        <option value="$PROJECT_DIR$/rec.txt" />
+        <option value="$PROJECT_DIR$/lcorpus.h" />
         <option value="$PROJECT_DIR$/lcorpus.cpp" />
         <option value="$PROJECT_DIR$/main.cpp" />
         <option value="$PROJECT_DIR$/pdtm.h" />
-        <option value="$PROJECT_DIR$/aliastable.h" />
         <option value="$PROJECT_DIR$/pdtm.cpp" />
       </list>
     </option>
@@ -161,7 +176,7 @@
     <ConfirmationsSetting value="0" id="Remove" />
   </component>
   <component name="ProjectView">
-    <navigator proportions="" version="1">
+    <navigator currentView="ProjectPane" proportions="" version="1">
       <flattenPackages />
       <showMembers />
       <showModules />
@@ -174,7 +189,11 @@
       <manualOrder />
       <foldersAlwaysOnTop value="true" />
     </navigator>
-    <panes />
+    <panes>
+      <pane id="ProjectPane">
+        <subPane />
+      </pane>
+    </panes>
   </component>
   <component name="PropertiesComponent">
     <property name="settings.editor.selected.configurable" value="preferences.lookFeel" />
@@ -370,12 +389,12 @@
       <workItem from="1474285910555" duration="13169000" />
       <workItem from="1474349783009" duration="568000" />
       <workItem from="1474350368714" duration="4322000" />
-      <workItem from="1474377755596" duration="7074000" />
+      <workItem from="1474377755596" duration="14615000" />
     </task>
     <servers />
   </component>
   <component name="TimeTrackingManager">
-    <option name="totallyTimeSpent" value="25133000" />
+    <option name="totallyTimeSpent" value="32674000" />
   </component>
   <component name="ToolWindowManager">
     <frame x="0" y="38" width="1920" height="1042" extended-state="6" />
@@ -421,10 +440,9 @@
         <state relative-caret-position="0">
           <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
           <folding>
-            <element signature="e#89#106#0" expanded="true" />
-            <element signature="e#4232#4244#0" expanded="true" />
-            <element signature="e#9068#11205#0" expanded="false" />
-            <element signature="e#11207#13394#0" expanded="false" />
+            <element signature="e#5312#5324#0" expanded="true" />
+            <element signature="e#5928#9293#0" expanded="false" />
+            <element signature="e#11146#13290#0" expanded="false" />
           </folding>
         </state>
       </provider>
@@ -434,7 +452,7 @@
         <state relative-caret-position="621">
           <caret line="23" column="28" selection-start-line="23" selection-start-column="28" selection-end-line="23" selection-end-column="28" />
           <folding>
-            <element signature="e#84#100#0" expanded="false" />
+            <element signature="e#102#118#0" expanded="true" />
           </folding>
         </state>
       </provider>
@@ -480,10 +498,9 @@
         <state relative-caret-position="0">
           <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
           <folding>
-            <element signature="e#89#106#0" expanded="true" />
-            <element signature="e#4232#4244#0" expanded="true" />
-            <element signature="e#9068#11205#0" expanded="false" />
-            <element signature="e#11207#13394#0" expanded="false" />
+            <element signature="e#5312#5324#0" expanded="true" />
+            <element signature="e#5928#9293#0" expanded="false" />
+            <element signature="e#11146#13290#0" expanded="false" />
           </folding>
         </state>
       </provider>
@@ -493,7 +510,7 @@
         <state relative-caret-position="650">
           <caret line="26" column="22" selection-start-line="26" selection-start-column="22" selection-end-line="26" selection-end-column="22" />
           <folding>
-            <element signature="e#84#100#0" expanded="false" />
+            <element signature="e#102#118#0" expanded="true" />
           </folding>
         </state>
       </provider>
@@ -539,10 +556,9 @@
         <state relative-caret-position="0">
           <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
           <folding>
-            <element signature="e#89#106#0" expanded="true" />
-            <element signature="e#4232#4244#0" expanded="true" />
-            <element signature="e#9068#11205#0" expanded="false" />
-            <element signature="e#11207#13394#0" expanded="false" />
+            <element signature="e#5312#5324#0" expanded="true" />
+            <element signature="e#5928#9293#0" expanded="false" />
+            <element signature="e#11146#13290#0" expanded="false" />
           </folding>
         </state>
       </provider>
@@ -552,7 +568,7 @@
         <state relative-caret-position="650">
           <caret line="26" column="22" selection-start-line="26" selection-start-column="22" selection-end-line="26" selection-end-column="22" />
           <folding>
-            <element signature="e#84#100#0" expanded="false" />
+            <element signature="e#102#118#0" expanded="true" />
           </folding>
         </state>
       </provider>
@@ -618,44 +634,10 @@
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/lcorpus.h">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="486">
-          <caret line="18" column="0" selection-start-line="18" selection-start-column="0" selection-end-line="18" selection-end-column="0" />
-          <folding />
-        </state>
-      </provider>
-    </entry>
     <entry file="file://$PROJECT_DIR$/../../util/cva.h">
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="324">
           <caret line="22" column="18" selection-start-line="22" selection-start-column="18" selection-end-line="22" selection-end-column="18" />
-          <folding />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/lcorpus.cpp">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="378">
-          <caret line="14" column="25" selection-start-line="14" selection-start-column="25" selection-end-line="14" selection-end-column="25" />
-          <folding />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/main.cpp">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="678">
-          <caret line="61" column="0" selection-start-line="61" selection-start-column="0" selection-end-line="61" selection-end-column="0" />
-          <folding>
-            <element signature="e#134#160#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/pdtm.h">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="621">
-          <caret line="44" column="0" selection-start-line="44" selection-start-column="0" selection-end-line="44" selection-end-column="0" />
           <folding />
         </state>
       </provider>
@@ -672,15 +654,58 @@
         </state>
       </provider>
     </entry>
+    <entry file="file://$PROJECT_DIR$/rec.txt">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="108">
+          <caret line="4" column="4" selection-start-line="4" selection-start-column="4" selection-end-line="4" selection-end-column="4" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/lcorpus.h">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="405">
+          <caret line="15" column="32" selection-start-line="15" selection-start-column="32" selection-end-line="15" selection-end-column="32" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/lcorpus.cpp">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="567">
+          <caret line="21" column="29" selection-start-line="21" selection-start-column="29" selection-end-line="21" selection-end-column="29" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/main.cpp">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="324">
+          <caret line="30" column="0" selection-start-line="30" selection-start-column="0" selection-end-line="30" selection-end-column="0" />
+          <folding>
+            <element signature="e#134#160#0" expanded="true" />
+          </folding>
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/pdtm.h">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="567">
+          <caret line="59" column="8" selection-start-line="59" selection-start-column="8" selection-end-line="59" selection-end-column="8" />
+          <folding>
+            <element signature="e#84#101#0" expanded="true" />
+          </folding>
+        </state>
+      </provider>
+    </entry>
     <entry file="file://$PROJECT_DIR$/pdtm.cpp">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="4404">
-          <caret line="471" column="40" selection-start-line="471" selection-start-column="40" selection-end-line="471" selection-end-column="40" />
+        <state relative-caret-position="81">
+          <caret line="3" column="0" selection-start-line="3" selection-start-column="0" selection-end-line="3" selection-end-column="0" />
           <folding>
-            <element signature="e#89#106#0" expanded="true" />
-            <element signature="e#4232#4244#0" expanded="true" />
-            <element signature="e#9068#11205#0" expanded="false" />
-            <element signature="e#11207#13394#0" expanded="false" />
+            <element signature="e#5312#5324#0" expanded="true" />
+            <element signature="e#5928#9293#0" expanded="false" />
+            <element signature="e#11146#13290#0" expanded="false" />
           </folding>
         </state>
       </provider>

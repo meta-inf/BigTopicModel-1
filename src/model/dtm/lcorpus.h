@@ -13,6 +13,7 @@ struct LocalCorpus {
 		vector<Token> tokens;
 	};
 	vector<vector<Doc>> docs;
+    size_t sum_n_docs, sum_tokens;
 	int vocab_s, vocab_e; 
 
     LocalCorpus(const std::string &fileName);

@@ -6,7 +6,8 @@ LocalCorpus::LocalCorpus(const std::string &fileName) {
     m_assert(fin.is_open());
     fin >> ep_s >> ep_e >> vocab_s >> vocab_e;
     docs.resize(size_t(ep_e - ep_s));
-    size_t sum_n_docs = 0;
+    sum_n_docs = 0;
+    sum_tokens = 0;
     for (int e = ep_s; e < ep_e; ++e) {
         auto &docs_e = docs[e - ep_s];
         int e_, n_docs;
@@ -18,6 +19,7 @@ LocalCorpus::LocalCorpus(const std::string &fileName) {
             for (fin >> m; m--; ) {
                 fin >> t >> f;
                 docs_e[d].tokens.push_back(Token{t, f});
+                sum_tokens ++;
             }
         }
     }

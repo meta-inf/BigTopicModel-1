@@ -5,6 +5,7 @@
 #ifndef BTM_DTM_PDTM_H
 #define BTM_DTM_PDTM_H
 
+#include <thread>
 #include <mpi.h>
 #include "lcorpus.h"
 #include "random.h"
@@ -19,33 +20,49 @@ class pDTM {
 	int procId, nProcRows, nProcCols, pRowId, pColId;
 	int N_glob_vocab, N_topics, N_batch;
 
+    vector<thread> threads;
+
 	vector<size_t> nEpDocs;
-	LocalCorpus corpus;
-	vector<Arr> localPhi, cwk;
+	LocalCorpus c_train, c_test_observed, c_test_held;
+	vector<Arr> localPhi;
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
+    vector<Arr> localPhiNormalized;
 	vector<Arr> globEta;
-	Arr sumEta, localEta, alpha;
-    DCMSparse cdk;
-//	DCMSparse cwk;
-	vector<rand_data> rd_data;
+	Arr sumEta, alpha;
+    // Sampling eta requires same random settings in a row
+	vector<rand_data> rd_data, rd_data_eta;
     // TODO: Init stuff above.
 
-	vector<pair<int, size_t>> localBatch, globalBatch;
-    vector<vector<AliasTable>> altWord;
-    vector<Arr> localPhiNormalized;
+    struct BatchState {
+        BatchState(LocalCorpus &corpus, int n_max_batch, pDTM &par);
+        int N_glob_vocab, N_topics;
+        pDTM &p;
+        DCMSparse cdk;
+        vector<Arr> cwk;
+        Arr localEta;
+        vector<pair<int, size_t>> localBatch, globalBatch;
+        vector<vector<AliasTable>> altWord;
+        LocalCorpus &corpus;
+        inline void divideBatch();
+        void UpdateZ_th(int thId, int nTh);
+        void UpdateZ();
+        void UpdateEta_th(int th, int nTh);
+        void UpdateEta();
+        void InitZ();
+    } b_train, b_test;
+
 	int iter;
 
 	void IterInit(int t);
-	void UpdateZ(int thId, int nTh);
-	void UpdateEta(int th, int nTh);
-    void InitZ();
 	void UpdatePhi(int th, int nTh);
 	void UpdateAlpha();
+    void EstimateLL();
 
 public:
 
-	pDTM(LocalCorpus &&corpus_, int n_vocab_, int procId_, int nProcRows_, int nProcCols_);
+	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, int n_vocab_,
+             int procId_, int nProcRows_, int nProcCols_);
 
 	void Infer();
 };

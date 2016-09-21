@@ -28,8 +28,6 @@ DEFINE_int32(n_iters, 10000, "number of gibbs steps");
 DEFINE_int32(init_ctm_iter, 200, "# gibbs steps for initialization");
 DEFINE_int32(trunc_input, -1, "...");
 DEFINE_bool(init_with_ctm, false, "initialize with a single diagonal CTM");
-DEFINE_double(report_every, 30, "Time in seconds between two consecutive reports");
-DEFINE_double(dump_every, -1, "Time between dumps. <=0 -> never");
 DECLARE_double(sgld_phi_a);
 DECLARE_double(sgld_eta_a);
 
