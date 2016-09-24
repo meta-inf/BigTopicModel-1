@@ -24,10 +24,10 @@ class pDTM {
 
 	vector<size_t> nEpDocs;
 	LocalCorpus c_train, c_test_observed, c_test_held;
-	vector<Arr> localPhi;
+	vector<Arr> localPhi, localPhiAux;
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
-    vector<Arr> localPhiNormalized;
+    vector<Arr> localPhiNormalized, localPhiSoftmax;
 	vector<Arr> globEta;
 	Arr sumEta, alpha;
     // Sampling eta requires same random settings in a row
@@ -41,14 +41,14 @@ class pDTM {
         DCMSparse cdk;
         vector<Arr> cwk;
         Arr localEta;
-        vector<pair<int, size_t>> localBatch, globalBatch;
+        vector<pair<int, size_t>> batch;
         vector<vector<AliasTable>> altWord;
         LocalCorpus &corpus;
-        inline void divideBatch();
+
         void UpdateZ_th(int thId, int nTh);
         void UpdateZ();
-        void UpdateEta_th(int th, int nTh);
-        void UpdateEta();
+        void UpdateEta_th(int n_iter, int th, int nTh);
+        void UpdateEta(int n_iter);
         void InitZ();
     } b_train, b_test;
 

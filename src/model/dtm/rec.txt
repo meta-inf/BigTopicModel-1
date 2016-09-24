@@ -9,7 +9,7 @@
             vector<size_t> offs;
             MPIHelpers::Allgatherv<double>(commRow, nProcCols, pColId, localEta.data(), offs, etaBuff);
             int eb_i = 0;
-            for (const auto &d: globalBatch) {
+            for (const auto &d: batch) {
                 for (int i = 0; i < N_topics; ++i) {
                     double nv = etaBuff[eb_i++];
                     sumEta(d.first, i) += nv - globEta[d.first](d.second, i);
