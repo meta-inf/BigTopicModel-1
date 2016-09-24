@@ -56,6 +56,7 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     int n_col_vocab = corpus.vocab_e - corpus.vocab_s;
     cwk.resize(n_row_eps);
     for (auto &a: cwk) a = Arr::Zero(N_topics, n_col_vocab);
+    ck = Arr::Zero(n_row_eps, N_topics);
 
     localEta = Arr::Zero(n_max_batch, p.N_topics);
 }
@@ -194,7 +195,7 @@ void pDTM::_SyncPhi() {
     }
     localPhiZ = Arr::Zero(localPhi.size(), N_topics);
     MPI_Allreduce(phi_exp_sum.data(), localPhiZ.data(),
-                  eig_size(phi_exp_sum), MPI_DOUBLE, MPI_SUM, commRow);
+                  (int)eig_size(phi_exp_sum), MPI_DOUBLE, MPI_SUM, commRow);
     for (int i = 0; i < localPhiZ.rows(); ++i) {
         for (int j = 0; j < localPhiZ.cols(); ++j)
             localPhiZ(i, j) = (double) log(localPhiZ(i, j));
@@ -290,17 +291,6 @@ void pDTM::IterInit(int iter) {
 }
 
 // UpdateZ and updateEta won't change persistent state (sample points etc.)
-void pDTM::BatchState::UpdateZ() {
-    InitZ();
-
-    for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_] = thread(&pDTM::BatchState::UpdateZ_th, this, _, FLAGS_n_threads);
-    for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_].join();
-
-    cdk.sync();
-    // cwk.sync();
-}
 
 void pDTM::BatchState::UpdateEta(int n_iter) {
     for (int _ = 0; _ < FLAGS_n_threads; ++_)
@@ -502,7 +492,7 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh)
         double K_post = (double)c_train.docs[ep_r].size() / N_batch;
         for (int k = 0; k < N_topics; ++k) {
             const auto &cwk_k = b_train.cwk[ep_r].row(k);
-            double ck_k = cwk_k.sum(); // FIXME: incorrect for multi machine
+            double ck_k = b_train.ck(ep_r, k);
             for (int w_g = v_s; w_g < v_e; ++w_g) {
                 int w_r = w_g - c_train.vocab_s;
                 double post = K_post * (cwk_k[w_r] - ck_k * localPhiSoftmax[ep_r](k, w_r));
@@ -541,6 +531,7 @@ void pDTM::BatchState::InitZ() {
 
     // Reset cwk (cdk is cleared in sync())
     for (auto &a: cwk) a *= 0;
+    ck *= 0;
 
     auto worker = [this](int kTh, int nTh) {
         for (int e = 0; e < corpus.ep_e - corpus.ep_s; ++e)
@@ -552,6 +543,27 @@ void pDTM::BatchState::InitZ() {
         threads[t] = thread(worker, t, FLAGS_n_threads);
     }
     for (auto &th: threads) th.join();
+}
+
+void pDTM::BatchState::UpdateZ() {
+    InitZ();
+
+    for (int _ = 0; _ < FLAGS_n_threads; ++_)
+        p.threads[_] = thread(&pDTM::BatchState::UpdateZ_th, this, _, FLAGS_n_threads);
+    for (int _ = 0; _ < FLAGS_n_threads; ++_)
+        p.threads[_].join();
+
+    // TODO: if DCMSparse permitting, we can sync after the last iteration when testing.
+    cdk.sync();
+
+    // FIXME: THIS IS SLOW. and zeroing out cwk is slow since it's sparse. use link lists with locks.
+    Arr ck_ro = ZEROS_LIKE(ck);
+    for (int e = 0; e < ck.rows(); ++e) {
+        for (int t = 0; t < ck.cols(); ++t)
+            for (int w = 0; w < cwk[e].cols(); ++w)
+                ck_ro(e, t) += cwk[e](t, w);
+    }
+    MPI_Allreduce(ck_ro.data(), ck.data(), (int)ck.size(), MPI_DOUBLE, MPI_SUM, p.commRow);
 }
 
 // Sample Z|MB.

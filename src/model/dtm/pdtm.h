@@ -38,6 +38,7 @@ class pDTM {
         pDTM &p;
         DCMSparse cdk;
         vector<Arr> cwk;
+        Arr ck; // row marginal for cwk, (n_row_ep, n_topics)
         Arr localEta;
         vector<pair<int, size_t>> batch;
         vector<vector<AliasTable>> altWord;
