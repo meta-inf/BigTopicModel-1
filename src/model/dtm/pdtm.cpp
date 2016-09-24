@@ -122,6 +122,8 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     for (auto &arr: localPhiNormalized) arr = ZEROS_LIKE(localPhi[0]);
     localPhiSoftmax.resize(size_t(c_train.ep_e - c_train.ep_s));
     for (auto &arr: localPhiSoftmax) arr = ZEROS_LIKE(localPhi[0]);
+    localPhiBak.resize(size_t(c_train.ep_e - c_train.ep_s));
+    for (auto &arr: localPhiBak) arr = ZEROS_LIKE(localPhi[0]);
 
     // globEta
     globEta.resize(n_row_eps);
@@ -182,9 +184,8 @@ inline void divide_interval(T s, T e, int k, int n, T &ls, T &le) {
 // - phi, eta includes {N_vocab-1}th column in storage to simplify other computations;
 //   They are clamped to zero as we're using reduced-normal and not updated.
 
-void pDTM::IterInit(int iter) {
-    this->iter = iter;
-    // {{{ Reduce rowwise normalizer for Phi
+// Reduce normalizer and set-up localPhi{Normalized, Softmax, Z} from localPhi.
+void pDTM::_SyncPhi() {
     Arr phi_exp_sum = Arr::Zero(localPhi.size(), N_topics);
     for (int i = 0; i < (int)localPhi.size(); ++i) {
         for (int j = 0; j < N_topics; ++j)
@@ -193,7 +194,7 @@ void pDTM::IterInit(int iter) {
     }
     localPhiZ = Arr::Zero(localPhi.size(), N_topics);
     MPI_Allreduce(phi_exp_sum.data(), localPhiZ.data(),
-            eig_size(phi_exp_sum), MPI_DOUBLE, MPI_SUM, commRow);
+                  eig_size(phi_exp_sum), MPI_DOUBLE, MPI_SUM, commRow);
     for (int i = 0; i < localPhiZ.rows(); ++i) {
         for (int j = 0; j < localPhiZ.cols(); ++j)
             localPhiZ(i, j) = (double) log(localPhiZ(i, j));
@@ -214,7 +215,12 @@ void pDTM::IterInit(int iter) {
         threads[t] = thread(worker, t, FLAGS_n_threads);
     }
     for (auto &th: threads) th.join();
-    // }}}
+}
+
+void pDTM::IterInit(int iter) {
+    this->g_iter = iter;
+
+    _SyncPhi();
 
     // {{{ Exchange PhiTm1, PhiTp1
     auto exTm1 = [&]() {
@@ -309,6 +315,8 @@ void pDTM::Infer() {
 
         if (t % FLAGS_report_every == 0) {
             EstimateLL();
+        } else if (t % 10 == 0) {
+            LOG(INFO) << t << " iterations finished.";
         }
 
         // Z
@@ -324,10 +332,7 @@ void pDTM::Infer() {
         }
 
         // Phi
-        for (int _ = 0; _ < FLAGS_n_threads; ++_)
-            threads[_] = thread(&pDTM::UpdatePhi, this, _, FLAGS_n_threads);
-        for (int _ = 0; _ < FLAGS_n_threads; ++_)
-            threads[_].join();
+        UpdatePhi();
 
         // Alpha;
         UpdateAlpha();
@@ -343,8 +348,8 @@ void pDTM::UpdateAlpha() {
         const double *send_data = alpha.data() + N_topics;
         double *recv_data = alpha.data();
         int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId - nProcCols, iter * 4 + 2,
-                recv_data, N_topics, MPI_DOUBLE, procId - nProcCols, iter * 4 + 3,
+                send_data, N_topics, MPI_DOUBLE, procId - nProcCols, g_iter * 4 + 2,
+                recv_data, N_topics, MPI_DOUBLE, procId - nProcCols, g_iter * 4 + 3,
                 MPI_COMM_WORLD, &status);
         assert(r == MPI_SUCCESS);
     };
@@ -354,8 +359,8 @@ void pDTM::UpdateAlpha() {
         const double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
         double *recv_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
         int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId + nProcCols, iter * 4 + 3,
-                recv_data, N_topics, MPI_DOUBLE, procId + nProcCols, iter * 4 + 2,
+                send_data, N_topics, MPI_DOUBLE, procId + nProcCols, g_iter * 4 + 3,
+                recv_data, N_topics, MPI_DOUBLE, procId + nProcCols, g_iter * 4 + 2,
                 MPI_COMM_WORLD, &status);
         assert(r == MPI_SUCCESS);
     };
@@ -420,7 +425,7 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     // do SGLD
     NormalDistribution normal;
     for (int _ = 0; _ < FLAGS_n_sgld_eta; ++_) {
-        int t = _ + p.iter * FLAGS_n_sgld_eta;
+        int t = _ + p.g_iter * FLAGS_n_sgld_eta;
         double eps = FLAGS_sgld_eta_a * (double)pow(FLAGS_sgld_eta_b + t, -FLAGS_sgld_eta_c);
         double sq_eps = (double)sqrt(eps);
 
@@ -451,53 +456,72 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     }
 }
 
-void pDTM::UpdatePhi(int kTh, int nTh) {
+void pDTM::UpdatePhi() {
+    // Set localPhiBak.
+    for (size_t e = 0; e < localPhi.size(); ++e) {
+        const double *dat = localPhiBak[e].data();
+        localPhiBak[e] = localPhi[e];
+        m_assert(localPhiBak[e].data() == dat); // FIXME
+    }
+
+    for (int _ = 0; _ < FLAGS_n_sgld_phi; ++_) {
+        if (_ > 0) {
+            _SyncPhi(); // Normalizers has changed
+        }
+        for (int th = 0; th < FLAGS_n_threads; ++th) {
+            threads[th] = thread(&pDTM::UpdatePhi_th, this, FLAGS_n_sgld_phi * g_iter + _, th, FLAGS_n_threads);
+        }
+        for (auto &th: threads) th.join();
+    }
+}
+
+// Thread worker for UpdatePhi. Requires localPhiBak and localPhiSoftmax to be set.
+void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh)
+{
     // Get vocab subset to sample
     int v_s, v_e;
     divide_interval(c_train.vocab_s, c_train.vocab_e, kTh, nTh, v_s, v_e);
     if (v_e == N_glob_vocab - 1) --v_e;
 
+    double eps = FLAGS_sgld_phi_a * (double)pow(FLAGS_sgld_phi_b + phi_iter, -FLAGS_sgld_phi_c);
+    double sqrt_eps = (double)sqrt(eps);
+
     // Sample.
     NormalDistribution normal;
-    for (int _ = 0; _ < FLAGS_n_sgld_phi; ++_) {
-        int t = FLAGS_n_sgld_phi * iter + _ + 1;
-        double eps = FLAGS_sgld_phi_a * (double)pow(FLAGS_sgld_phi_b + t, -FLAGS_sgld_phi_c);
-        double sqrt_eps = (double)sqrt(eps);
-        for (int ep_g = c_train.ep_s; ep_g < c_train.ep_e; ++ep_g) {
-            int ep_r = ep_g - c_train.ep_s;
-            auto &phi = localPhi[ep_r];
-            auto &phiAux = localPhiAux[ep_r];
-            const auto &phiTm1 = (ep_r == 0) ? this->phiTm1 : localPhi[ep_r - 1];
-            const auto &phiTp1 = (ep_g + 1 == c_train.ep_e) ? this->phiTp1 : localPhi[ep_r + 1];
-            /* for Topic k:
-             * g_post = (N_docs_ep / N_batch) * [cwk[k] - ck[k] * softmax(phi)]
-			 * g_prior = (phiTm1 + phiTp1 - 2*phi) / sqr(sigma_phi) [k] (first and last ep has different priors)
-             * phi += N(0, eps) + eps / 2 * (g_post + g_prior) */
+    for (int ep_g = c_train.ep_s; ep_g < c_train.ep_e; ++ep_g) {
+        int ep_r = ep_g - c_train.ep_s;
+        auto &phi = localPhi[ep_r];
+        auto &phiAux = localPhiAux[ep_r];
+        const auto &phiTm1 = (ep_r == 0) ? this->phiTm1 : localPhiBak[ep_r - 1];
+        const auto &phiTp1 = (ep_g + 1 == c_train.ep_e) ? this->phiTp1 : localPhiBak[ep_r + 1];
+        /* for Topic k:
+         * g_post = (N_docs_ep / N_batch) * [cwk[k] - ck[k] * softmax(phi)]
+         * g_prior = (phiTm1 + phiTp1 - 2*phi) / sqr(sigma_phi) [k] (first and last ep has different priors)
+         * phi += N(0, eps) + eps / 2 * (g_post + g_prior) */
 
-            double K_post = (double)c_train.docs[ep_r].size() / N_batch;
-            for (int k = 0; k < N_topics; ++k) {
-                const auto &cwk_k = b_train.cwk[ep_r].row(k);
-                double ck_k = cwk_k.sum(); // FIXME: incorrect for multi machine
-                for (int w_g = v_s; w_g < v_e; ++w_g) {
-                    int w_r = w_g - c_train.vocab_s;
-                    double post = K_post * (cwk_k[w_r] - ck_k * localPhiSoftmax[ep_r](k, w_r));
-                    double prior = 0;
-                    prior += (0 == ep_g) ?
-                             (-phi(k, w_r) / sqr(FLAGS_sig_phi0)) :
-                             ((phiTm1(k, w_r) - phi(k, w_r)) / sqr(FLAGS_sig_phi));
-                    prior += (pRowId + 1 == nProcRows && ep_g + 1 == c_train.ep_e) ?
-                             0 :
-                             ((phiTp1(k, w_r) - phi(k, w_r)) / sqr(FLAGS_sig_phi));
-                    double grad = prior + post;
-                    if (FLAGS_psgld) {
-                        phiAux(k, w_r) = FLAGS_psgld_a * phiAux(k, w_r) + (1 - FLAGS_psgld_a) * grad * grad;
-                        double g = 1. / (FLAGS_psgld_l + (double)sqrt(phiAux(k, w_r)));
-                        phi(k, w_r) += normal(&rd_data[kTh]) * sqrt_eps * sqrt(g) +
-                                       eps / 2 * g * grad;
-                    }
-                    else {
-                        phi(k, w_r) += normal(&rd_data[kTh]) * sqrt_eps + eps / 2 * grad;
-                    }
+        double K_post = (double)c_train.docs[ep_r].size() / N_batch;
+        for (int k = 0; k < N_topics; ++k) {
+            const auto &cwk_k = b_train.cwk[ep_r].row(k);
+            double ck_k = cwk_k.sum(); // FIXME: incorrect for multi machine
+            for (int w_g = v_s; w_g < v_e; ++w_g) {
+                int w_r = w_g - c_train.vocab_s;
+                double post = K_post * (cwk_k[w_r] - ck_k * localPhiSoftmax[ep_r](k, w_r));
+                double prior = 0;
+                prior += (0 == ep_g) ?
+                         (-phi(k, w_r) / sqr(FLAGS_sig_phi0)) :
+                         ((phiTm1(k, w_r) - phi(k, w_r)) / sqr(FLAGS_sig_phi));
+                prior += (pRowId + 1 == nProcRows && ep_g + 1 == c_train.ep_e) ?
+                         0 :
+                         ((phiTp1(k, w_r) - phi(k, w_r)) / sqr(FLAGS_sig_phi));
+                double grad = prior + post;
+                if (FLAGS_psgld) {
+                    phiAux(k, w_r) = FLAGS_psgld_a * phiAux(k, w_r) + (1 - FLAGS_psgld_a) * grad * grad;
+                    double g = 1. / (FLAGS_psgld_l + (double)sqrt(phiAux(k, w_r)));
+                    phi(k, w_r) += normal(&rd_data[kTh]) * sqrt_eps * sqrt(g) +
+                                   eps / 2 * g * grad;
+                }
+                else {
+                    phi(k, w_r) += normal(&rd_data[kTh]) * sqrt_eps + eps / 2 * grad;
                 }
             }
         }

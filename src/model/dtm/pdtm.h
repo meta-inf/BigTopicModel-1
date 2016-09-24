@@ -15,7 +15,6 @@
 class pDTM {
     static const int MAX_THREADS = 64;
 
-    // TODO: Init stuff below
 	MPI_Comm commRow;
 	int procId, nProcRows, nProcCols, pRowId, pColId;
 	int N_glob_vocab, N_topics, N_batch;
@@ -27,12 +26,11 @@ class pDTM {
 	vector<Arr> localPhi, localPhiAux;
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
-    vector<Arr> localPhiNormalized, localPhiSoftmax;
+    vector<Arr> localPhiNormalized, localPhiSoftmax, localPhiBak;
 	vector<Arr> globEta;
 	Arr sumEta, alpha;
     // Sampling eta requires same random settings in a row
 	vector<rand_data> rd_data, rd_data_eta;
-    // TODO: Init stuff above.
 
     struct BatchState {
         BatchState(LocalCorpus &corpus, int n_max_batch, pDTM &par);
@@ -52,10 +50,12 @@ class pDTM {
         void InitZ();
     } b_train, b_test;
 
-	int iter;
+	int g_iter;
 
+    void _SyncPhi();
 	void IterInit(int t);
-	void UpdatePhi(int th, int nTh);
+	void UpdatePhi();
+    void UpdatePhi_th(int phi_iter, int kTh, int nTh);
 	void UpdateAlpha();
     void EstimateLL();
 
