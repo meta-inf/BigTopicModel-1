@@ -1,6 +1,5 @@
 //
 // Created by w on 9/19/2016.
-// TODO: test EstimateLL
 //
 
 #include "pdtm.h"
@@ -219,8 +218,6 @@ void pDTM::_SyncPhi() {
 }
 
 void pDTM::IterInit(int iter) {
-    this->g_iter = iter;
-
     _SyncPhi();
 
     // {{{ Exchange PhiTm1, PhiTp1
@@ -300,20 +297,20 @@ void pDTM::BatchState::UpdateEta(int n_iter) {
 }
 
 void pDTM::Infer() {
-    for (int t = 0; t < FLAGS_n_iters; ++t) {
-        IterInit(t);
+    for (int iter = 0; iter < FLAGS_n_iters; ++iter) {
+        IterInit(iter);
 
-        if (t % FLAGS_report_every == 0) {
+        if (iter % FLAGS_report_every == 0) {
             EstimateLL();
-        } else if (t % 10 == 0) {
-            LOG(INFO) << t << " iterations finished.";
+        } else if (iter % 10 == 0) {
+            LOG(INFO) << iter << " iterations finished.";
         }
 
         // Z
         b_train.UpdateZ();
 
         // Eta
-        b_train.UpdateEta(t);
+        b_train.UpdateEta(iter);
         for (int d = 0, ep, rank; d < b_train.batch.size(); ++d) {
             // commit changes for eta
             std::tie(ep, rank) = b_train.batch[d];
@@ -322,15 +319,16 @@ void pDTM::Infer() {
         }
 
         // Phi
-        UpdatePhi();
+        UpdatePhi(iter);
 
         // Alpha;
-        UpdateAlpha();
+        UpdateAlpha(iter);
         MPI_Barrier(commRow);
     }
 }
 
-void pDTM::UpdateAlpha() {
+void pDTM::UpdateAlpha(int n_iter)
+{
     // Request alphaT{pm}1
     auto excM1 = [this] () {
         if (pRowId == 0) return; // Initialized to 0 as expected
@@ -338,8 +336,8 @@ void pDTM::UpdateAlpha() {
         const double *send_data = alpha.data() + N_topics;
         double *recv_data = alpha.data();
         int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId - nProcCols, g_iter * 4 + 2,
-                recv_data, N_topics, MPI_DOUBLE, procId - nProcCols, g_iter * 4 + 3,
+                send_data, N_topics, MPI_DOUBLE, procId - nProcCols, n_iter * 4 + 2,
+                recv_data, N_topics, MPI_DOUBLE, procId - nProcCols, n_iter * 4 + 3,
                 MPI_COMM_WORLD, &status);
         assert(r == MPI_SUCCESS);
     };
@@ -349,8 +347,8 @@ void pDTM::UpdateAlpha() {
         const double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
         double *recv_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
         int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId + nProcCols, g_iter * 4 + 3,
-                recv_data, N_topics, MPI_DOUBLE, procId + nProcCols, g_iter * 4 + 2,
+                send_data, N_topics, MPI_DOUBLE, procId + nProcCols, n_iter * 4 + 3,
+                recv_data, N_topics, MPI_DOUBLE, procId + nProcCols, n_iter * 4 + 2,
                 MPI_COMM_WORLD, &status);
         assert(r == MPI_SUCCESS);
     };
@@ -415,7 +413,7 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     // do SGLD
     NormalDistribution normal;
     for (int _ = 0; _ < FLAGS_n_sgld_eta; ++_) {
-        int t = _ + p.g_iter * FLAGS_n_sgld_eta;
+        int t = _ + n_iter * FLAGS_n_sgld_eta;
         double eps = FLAGS_sgld_eta_a * (double)pow(FLAGS_sgld_eta_b + t, -FLAGS_sgld_eta_c);
         double sq_eps = (double)sqrt(eps);
 
@@ -446,7 +444,8 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     }
 }
 
-void pDTM::UpdatePhi() {
+void pDTM::UpdatePhi(int n_iter)
+{
     // Set localPhiBak.
     for (size_t e = 0; e < localPhi.size(); ++e) {
         const double *dat = localPhiBak[e].data();
@@ -459,15 +458,14 @@ void pDTM::UpdatePhi() {
             _SyncPhi(); // Normalizers has changed
         }
         for (int th = 0; th < FLAGS_n_threads; ++th) {
-            threads[th] = thread(&pDTM::UpdatePhi_th, this, FLAGS_n_sgld_phi * g_iter + _, th, FLAGS_n_threads);
+            threads[th] = thread(&pDTM::UpdatePhi_th, this, FLAGS_n_sgld_phi * n_iter + _, th, FLAGS_n_threads);
         }
         for (auto &th: threads) th.join();
     }
 }
 
 // Thread worker for UpdatePhi. Requires localPhiBak and localPhiSoftmax to be set.
-void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh)
-{
+void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     // Get vocab subset to sample
     int v_s, v_e;
     divide_interval(c_train.vocab_s, c_train.vocab_e, kTh, nTh, v_s, v_e);

@@ -51,13 +51,11 @@ class pDTM {
         void InitZ();
     } b_train, b_test;
 
-	int g_iter;
-
     void _SyncPhi();
 	void IterInit(int t);
-	void UpdatePhi();
+	void UpdatePhi(int n_iter);
     void UpdatePhi_th(int phi_iter, int kTh, int nTh);
-	void UpdateAlpha();
+	void UpdateAlpha(int n_iter);
     void EstimateLL();
 
 public:
