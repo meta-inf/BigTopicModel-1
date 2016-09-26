@@ -60,8 +60,8 @@ class pDTM {
 
 public:
 
-	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, int n_vocab_,
-             int procId_, int nProcRows_, int nProcCols_);
+	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed,
+         int n_vocab_, int procId_, int nProcRows_, int nProcCols_);
 
 	void Infer();
 };

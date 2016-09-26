@@ -6,8 +6,8 @@
 
 using namespace std;
 
-DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");
-DEFINE_bool(show_topics, false, "Display top 10 words in each topic");
+DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   // TODO
+DEFINE_bool(show_topics, false, "Display top 10 words in each topic"); // TODO
 DEFINE_int32(n_sgld_phi, 2, "number of sgld iterations for phi");
 DEFINE_int32(n_sgld_eta, 4, "number of sgld iterations for eta");
 DEFINE_int32(n_mh_steps, 16, "number of burn-in mh iterations for Z");
@@ -17,25 +17,23 @@ DEFINE_int32(n_infer_samples, 1, "number of samples used in test");
 DEFINE_int32(n_threads, 2, "number of threads used");
 DEFINE_int32(n_topics, 50, "number of topics");
 DEFINE_int32(n_doc_batch, 60, "implemented");
-DEFINE_bool(psgld, false, "pSGLD with RMSProp for Phi");
+DEFINE_bool(psgld, true, "pSGLD with RMSProp for Phi");
 DEFINE_double(psgld_a, 0.95, "alpha in RMSProp");
 DEFINE_double(psgld_l, 1e-4, "lambda in pSGLD");
-DEFINE_bool(sgld_mh, false, "Do MH test in SGLD");
-DEFINE_bool(fix_alpha, false, "Use fixed symmetrical topic prior");
-DEFINE_double(sgld_phi_a, 0.5, "");
-DEFINE_double(sgld_phi_b, 100, "");
-DEFINE_double(sgld_phi_c, 0.8, "");
-DEFINE_double(sgld_eta_a, 0.5, "");
-DEFINE_double(sgld_eta_b, 100, "");
-DEFINE_double(sgld_eta_c, 0.8, "");
-DEFINE_int32(sgld_mh_init, 100, "");
-DEFINE_double(sig_al, 0.6, "");
-DEFINE_double(sig_phi, 0.2, "");
-DEFINE_double(sig_al0, 0.1, "");
-DEFINE_double(sig_phi0, 10, "");
-DEFINE_double(sig_eta, 4, "");
+DEFINE_bool(fix_alpha, false, "Use fixed symmetrical topic prior");    // TODO
+DEFINE_double(sgld_phi_a, 0.5, "SGLD learning rate parameter for Phi");
+DEFINE_double(sgld_phi_b, 100, "SGLD learning rate parameter for Phi");
+DEFINE_double(sgld_phi_c, 0.8, "SGLD learning rate parameter for Phi");
+DEFINE_double(sgld_eta_a, 0.5, "SGLD learning rate parameter for Eta");
+DEFINE_double(sgld_eta_b, 100, "SGLD learning rate parameter for Eta");
+DEFINE_double(sgld_eta_c, 0.8, "SGLD learning rate parameter for Eta");
+DEFINE_double(sig_al, 0.6, "stddev for P(alpha_t|alpha_{tm1})");
+DEFINE_double(sig_al0, 0.1, "stddev of Gaussian prior for alpha_0");
+DEFINE_double(sig_phi, 0.2, "... for phi_t|phi_{tm1}");
+DEFINE_double(sig_phi0, 10, "... for phi_0");
+DEFINE_double(sig_eta, 4, "... for P(eta_{td}|alpha_t)");
 DEFINE_int32(report_every, 1, "Time in iterations between two consecutive reports");
-DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
+DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never"); // TODO
 
 DEFINE_bool(_loadphi, false, "for debugging; fixme");
 
@@ -48,6 +46,9 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     p(p_), corpus(corpus_),
     cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads)
 {
+#ifdef LOCAL_FIXME
+    cdk.verbose = true;
+#endif
     N_glob_vocab = p.N_glob_vocab; // Having problem putting them in the initializer list
     N_topics = p.N_topics;
     // cwk
@@ -73,11 +74,6 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     pRowId = procId / nProcCols;
     pColId = procId % nProcCols;
     MPI_Comm_split(MPI_COMM_WORLD, pRowId, pColId, &commRow);
-
-    // FIXME: REMOVE ME
-    int t;
-    MPI_Comm_rank(commRow, &t);
-    assert(t == procId % nProcCols);
 
     // localPhi
     size_t n_row_eps = c_train.docs.size();
@@ -127,7 +123,7 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
 
     // globEta
     globEta.resize(n_row_eps);
-    for (int ep = c_train.ep_s; ep < c_train.ep_e; ++ep)
+    for (int ep = 0; ep < n_row_eps; ++ep)
         globEta[ep] = Arr::Zero(c_train.docs[ep].size(), N_topics);
 
     // sumEta, alpha
@@ -143,6 +139,8 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     srand(233 * nProcRows + pRowId);
     rd_data_eta.resize((size_t)FLAGS_n_threads);
     for (auto &r: rd_data_eta) rand_init(&r, rand());
+
+    DLOG(INFO) << "init finished";
 }
 
 void SampleBatchId (vector<int> *dst, int n_total, int n_batch, rand_data *rd) {
@@ -330,7 +328,7 @@ void pDTM::Infer() {
 void pDTM::UpdateAlpha(int n_iter)
 {
     // Request alphaT{pm}1
-    auto excM1 = [this] () {
+    auto excM1 = [&] () {
         if (pRowId == 0) return; // Initialized to 0 as expected
         MPI_Status status;
         const double *send_data = alpha.data() + N_topics;
@@ -341,7 +339,7 @@ void pDTM::UpdateAlpha(int n_iter)
                 MPI_COMM_WORLD, &status);
         assert(r == MPI_SUCCESS);
     };
-    auto excP1 = [this] () {
+    auto excP1 = [&] () {
         if (pRowId == nProcRows - 1) return;
         MPI_Status status;
         const double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
