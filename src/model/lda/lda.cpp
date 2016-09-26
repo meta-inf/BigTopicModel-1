@@ -9,12 +9,9 @@ using std::sort;
 
 #define PREFETCH_LENGTH 2
 
-/**
- * @tid : the thread number of current working thread
- */
 void LDA::iterWord() {
-    //printf("pid : %d thread : %d start\n", process_id, tid);
-    auto start = std::chrono::system_clock::now();
+    Clock clk;
+    clk.tic();
 #pragma omp parallel for schedule(dynamic, 10)
     for (TWord local_w = 0; local_w < num_words; local_w++) {
         int tid = omp_get_thread_num();
@@ -63,8 +60,6 @@ void LDA::iterWord() {
 
         auto wDoc = corpus.Get(local_w);
         size_t doc_per_word = wDoc.size();
-        // TODO : iEnd doesn't be initialized, is this a bug?
-        size_t iEnd;
         size_t iPrefetchStart = 0;
         // Advance PREFETCH_LENGTH tokens
         for (int i = 0; i < PREFETCH_LENGTH; i++) {
@@ -72,6 +67,7 @@ void LDA::iterWord() {
             while (iPrefetchEnd < doc_per_word && wDoc[iPrefetchStart] == wDoc[iPrefetchEnd]) iPrefetchEnd++;
             iPrefetchStart = iPrefetchEnd;
         }
+        size_t iEnd; // notice that iEnd was initialized in the inner loop
         for (size_t iStart = 0; iStart < doc_per_word; iStart = iEnd) {
             auto d = wDoc[iStart];
             for (iEnd = iStart; iEnd < doc_per_word && wDoc[iEnd] == d; iEnd++);
@@ -143,8 +139,7 @@ void LDA::iterWord() {
             phi[k] -= entry.v * inv_ck[k];
         }
     }
-    //stat.elapsed[tid] = std::chrono::system_clock::now() - start;
-    //printf("pid : %d - thread : %d, iter word done\n", process_id, tid);
+    LOG_IF(INFO, process_id == monitor_id) << "iterWord took " << clk.toc() << " s";
 }
 
 /**
@@ -153,15 +148,38 @@ void LDA::iterWord() {
  * @param thCorpus	:	test hold corpus
  */
 void LDA::Estimate() {
-    //stat.CorpusStat(corpus);
-    //printf("pid %d Start Estimate\n", process_id);
     Clock clk;
     clk.tic();
+    if (monolith == local_merge_style) {
+        //LOG_IF(INFO, process_id == monitor_id) << "start set mono buf";
+        vector<size_t> doc_count;
+        vector<size_t> word_count;
+        doc_count.resize(num_docs);
+        word_count.resize(num_words);
+        fill(doc_count.begin(), doc_count.end(), 0);
+        fill(word_count.begin(), word_count.end(), 0);
+#pragma omp parallel for
+        for (TWord v = 0; v < num_words; v++) {
+            auto row = corpus.Get(v);
+            for (auto d: row) {
+                doc_count[d]++;
+                word_count[v]++;
+            }
+        }
+        cdk.set_mono_buff(doc_count);
+        cwk.set_mono_buff(word_count);
+    }
 
-    /// Randomly initialize topics for each token
+    /*!
+     * This loop did two jobs:
+     * 0. Randomly initialize topics for each token
+     * 1. Calculate the average count of tokens belong to each (word, document) pair
+     */
     std::uniform_int_distribution<int> dice(0, K - 1);
+    atomic<size_t> averageCount{0};
 #pragma omp parallel for
     for (TWord v = 0; v < num_words; v++) {
+        int last = -1, cnt = 0;
         int tid = omp_get_thread_num();
         auto &generator = generators.Get();
         auto row = corpus.Get(v);
@@ -169,16 +187,6 @@ void LDA::Estimate() {
             TTopic k = dice(generator);
             cwk.update(tid, v, k);
             cdk.update(tid, d, k);
-        }
-    }
-
-    /// Calculate the average count of tokens belong to each (word, document) pair
-    atomic<size_t> averageCount;
-#pragma omp parallel for
-    for (TWord v = 0; v < num_words; v++) {
-        int last = -1, cnt = 0;
-        auto row = corpus.Get(v);
-        for (auto d: row) {
             if (d != last) {
                 last = d;
                 cnt++;
@@ -206,14 +214,26 @@ void LDA::Estimate() {
                 word_per_doc[d] = L;
             }
         }
-        if (process_id == monitor_id)
-            printf("\x1b[31mpid : %d - cdk sync : %f\x1b[0m\n", process_id, clk.toc());
+        if (process_id == monitor_id) {
+            unsigned int cdk_size = 0;
+            for (int i = 0; i < num_docs; ++i) {
+                cdk_size += cdk.row(i).size();
+            }
+            LOG(INFO) << "cdk_size : " << cdk_size << std::endl;
+            LOG(INFO) << "\x1b[31mpid : " << process_id << " - cdk sync : " << clk.toc() << "\x1b[0m" << std::endl;
+        }
 
         /// sync cwk
         clk.tic();
         cwk.sync();
-        if (process_id == monitor_id)
-            printf("\x1b[31mpid : %d - cwk sync : %f\x1b[0m\n", process_id, clk.toc());
+        if (process_id == monitor_id) {
+            unsigned int cwk_size = 0;
+            for (int i = 0; i < num_words; ++i) {
+                cwk_size += cwk.row(i).size();
+            }
+            LOG(INFO) << "cwk_size : " << cwk_size << std::endl;
+            LOG(INFO) << "\x1b[31mpid : " << process_id << " - cwk sync : " << clk.toc() << "\x1b[0m" << std::endl;
+        }
 
         /// sync ck and initialize prior1
         clk.tic();
@@ -230,8 +250,7 @@ void LDA::Estimate() {
             phi = priorCwk;
         prior1Prob[K - 1] = prior1Sum * 2 + 1;
         prior1Table.Build(prior1Prob.begin(), prior1Prob.end(), prior1Sum);
-        if (process_id == monitor_id)
-            printf("\x1b[31mpid : %d - ck sync : %f\x1b[0m\n", process_id, clk.toc());
+        LOG_IF(INFO, process_id == monitor_id) << "\x1b[31mpid : " << process_id << " - ck sync : " << clk.toc() << "\x1b[0m" << std::endl;
 
         iterWord();
 
@@ -241,11 +260,18 @@ void LDA::Estimate() {
         double llreduce = 0;
         MPI_Allreduce(&log_likelihood, &llreduce, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        if (process_id == monitor_id) {
-            printf("\x1b[32mpid : %d Iteration %d, %f s, Kd = %f\tperplexity = %f\t%lf Mtoken/s\x1b[0m\n",
-                   process_id, iter, clk.timeSpan(iter_start), cdk.averageColumnSize(),
-                   exp(-llreduce / global_token_number),
-                   global_token_number / clk.timeSpan(iter_start) / 1e6);
-        }
+        LOG_IF(INFO, process_id == monitor_id) << "\x1b[32mpid : " << process_id
+                << " Iteration " << iter
+                << ", " << clk.timeSpan(iter_start)
+                << " Kd = " <<  cdk.averageColumnSize()
+                << "\tperplexity = " << exp(-llreduce / global_token_number)
+                << "\t" << global_token_number / clk.timeSpan(iter_start) / 1e6
+                << " Mtoken/s\x1b[0m" << std::endl;
     }
+    if (monolith == local_merge_style) {
+        cdk.free_mono_buff();
+        cwk.free_mono_buff();
+    }
+    cdk.show_time_elapse();
+    cwk.show_time_elapse();
 }
