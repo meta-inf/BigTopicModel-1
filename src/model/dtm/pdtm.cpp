@@ -163,7 +163,7 @@ inline size_t cva_row_sum(CVA<SpEntry>::Row &row) {
 inline void softmax(const double *src, double *dst, int n) {
     double max = -1e100, sum = 0;
     for (int d = 0; d < n; ++d) if (src[d] > max) max = src[d];
-    for (int d = 0; d < n; ++d) sum += (dst[d] = (double)exp(src[d] - max));
+    for (int d = 0; d < n; ++d) sum += (dst[d] = exp(src[d] - max));
     for (int d = 0; d < n; ++d) dst[d] /= sum;
 }
 template <typename T>
@@ -190,17 +190,17 @@ void pDTM::_SyncPhi() {
                   (int)eig_size(phi_exp_sum), MPI_DOUBLE, MPI_SUM, commRow);
     for (int i = 0; i < localPhiZ.rows(); ++i) {
         for (int j = 0; j < localPhiZ.cols(); ++j)
-            localPhiZ(i, j) = (double) log(localPhiZ(i, j));
+            localPhiZ(i, j) = log(localPhiZ(i, j));
     }
     auto worker = [this](int kTh, int nTh) {
+        int k_s, k_e;
+        divide_interval(0, N_topics, kTh, nTh, k_s, k_e);
         for (int e = 0; e < c_train.ep_e - c_train.ep_s; ++e)
-            for (int v = c_train.vocab_s; v < c_train.vocab_e; ++v) {
-                if (v % nTh != kTh) continue;
-                int v_rel = v - c_train.vocab_s;
-                for (int k = 0; k < N_topics; ++k) {
-                    double cv = localPhi[e](k, v_rel) - localPhiZ(e, k);
-                    localPhiNormalized[e](k, v_rel) = cv;
-                    localPhiSoftmax[e](k, v_rel) = (double)exp(cv);
+            for (int k = k_s; k < k_e; ++k) {
+                for (int v = 0; v < c_train.vocab_e - c_train.vocab_s; ++v) {
+                    double cv = localPhi[e](k, v) - localPhiZ(e, k);
+                    localPhiNormalized[e](k, v) = cv;
+                    localPhiSoftmax[e](k, v) = exp(cv);
                 }
             }
     };
@@ -390,7 +390,7 @@ void pDTM::UpdateAlpha(int n_iter)
             k = 1. / sqr(FLAGS_sig_al);
             var = 1. / (2 * k + c_train.docs[ep].size() * s_eta);
         }
-        double std = (double)sqrt(var);
+        double std = sqrt(var);
         for (int i = 0; i + 1 < N_topics; ++i) {
             double mu = ((pre[i] + nxt[i]) * k + sumEta(ep, i) * s_eta) * var;
             cur[i] = normal(&rd_data[0]) * std + mu;
@@ -416,8 +416,8 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     NormalDistribution normal;
     for (int _ = 0; _ < FLAGS_n_sgld_eta; ++_) {
         int t = _ + n_iter * FLAGS_n_sgld_eta;
-        double eps = FLAGS_sgld_eta_a * (double)pow(FLAGS_sgld_eta_b + t, -FLAGS_sgld_eta_c);
-        double sq_eps = (double)sqrt(eps);
+        double eps = FLAGS_sgld_eta_a * pow(FLAGS_sgld_eta_b + t, -FLAGS_sgld_eta_c);
+        double sq_eps = sqrt(eps);
 
         // Update all docs
         for (int di = (int)b_s; di < b_e; ++di) {
@@ -446,8 +446,7 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     }
 }
 
-void pDTM::UpdatePhi(int n_iter)
-{
+void pDTM::UpdatePhi(int n_iter) {
     // Set localPhiBak.
     for (size_t e = 0; e < localPhi.size(); ++e)
         localPhiBak[e] = localPhi[e];
@@ -473,8 +472,8 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     divide_interval(c_train.vocab_s, c_train.vocab_e, kTh, nTh, v_s, v_e);
     if (v_e == N_glob_vocab - 1) --v_e;
 
-    double eps = FLAGS_sgld_phi_a * (double)pow(FLAGS_sgld_phi_b + phi_iter, -FLAGS_sgld_phi_c);
-    double sqrt_eps = (double)sqrt(eps);
+    double eps = FLAGS_sgld_phi_a * pow(FLAGS_sgld_phi_b + phi_iter, -FLAGS_sgld_phi_c);
+    double sqrt_eps = sqrt(eps);
 
     // Sample.
     NormalDistribution normal;
@@ -489,7 +488,7 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
          * g_prior = (phiTm1 + phiTp1 - 2*phi) / sqr(sigma_phi) [k] (first and last ep has different priors)
          * phi += N(0, eps) + eps / 2 * (g_post + g_prior) */
 
-        double K_post = (double)c_train.docs[ep_r].size() / N_batch;
+        double K_post = (double) c_train.docs[ep_r].size() / N_batch;
         for (int k = 0; k < N_topics; ++k) {
             const auto &cwk_k = b_train.cwk[ep_r].row(k);
             double ck_k = b_train.ck(ep_r, k);
@@ -506,7 +505,7 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
                 double grad = prior + post;
                 if (FLAGS_psgld) {
                     phiAux(k, w_r) = FLAGS_psgld_a * phiAux(k, w_r) + (1 - FLAGS_psgld_a) * grad * grad;
-                    double g = 1. / (FLAGS_psgld_l + (double)sqrt(phiAux(k, w_r)));
+                    double g = 1. / (FLAGS_psgld_l + sqrt(phiAux(k, w_r)));
                     phi(k, w_r) += normal(&rd_data[kTh]) * sqrt_eps * sqrt(g) +
                                    eps / 2 * g * grad;
                 }
