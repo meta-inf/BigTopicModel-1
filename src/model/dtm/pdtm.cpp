@@ -46,9 +46,6 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     p(p_), corpus(corpus_),
     cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads)
 {
-#ifdef LOCAL_FIXME
-    cdk.verbose = true;
-#endif
     N_glob_vocab = p.N_glob_vocab; // Having problem putting them in the initializer list
     N_topics = p.N_topics;
     // cwk
@@ -131,14 +128,14 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     alpha = Arr::Zero(n_row_eps + 2, N_topics);
 
     // rd_data
-    srand(233 * (nProcCols * nProcRows) + procId);
+    srand(233u * (nProcCols * nProcRows) + procId);
     rd_data.resize((size_t)FLAGS_n_threads);
-    for (auto &r: rd_data) rand_init(&r, rand());
+    for (auto &r: rd_data) rand_init(&r, (unsigned)rand());
 
     // rd_data_eta is the same inside a row
-    srand(233 * nProcRows + pRowId);
+    srand(233u * nProcRows + pRowId);
     rd_data_eta.resize((size_t)FLAGS_n_threads);
-    for (auto &r: rd_data_eta) rand_init(&r, rand());
+    for (auto &r: rd_data_eta) rand_init(&r, (unsigned)rand());
 
     DLOG(INFO) << "init finished";
 }
@@ -218,7 +215,6 @@ void pDTM::IterInit(int iter) {
     auto exTm1 = [&]() {
         if (pRowId == 0) return;
         MPI_Status status;
-        LOG(INFO) << "Sending " << eig_size(localPhi[0]) << " " << procId << " to " << procId-nProcCols;
         int e = MPI_Sendrecv((void*)localPhi[0].data(), eig_size(localPhi[0]),
                 MPI_DOUBLE, procId - nProcCols, iter * 4,
                 (void*)phiTm1.data(), eig_size(phiTm1),
@@ -656,30 +652,35 @@ void pDTM::EstimateLL() {
     LOG(INFO) << "EstimateLL: burn-in took " << ck.toc() << " / " << FLAGS_n_infer_burn_in;
 
     // Draw samples and estimate
-    // TODO: persistent storage for lhoods and thread-safe for etaSoftmax ?
     Arr lhoods = Arr::Zero(c_test_observed.sum_n_docs, FLAGS_n_infer_samples);
-    vector<double> eta_s((size_t)N_topics);
+    vector<double> eta_softmax_th[MAX_THREADS];
+
     for (int _ = 0; _ < FLAGS_n_infer_samples; ++_) {
         b_test.UpdateZ();
         b_test.UpdateEta(n_iter++);
         assert(!b_test.localEta.hasNaN());
-        // TODO: multi-thread for this
         ck.tic();
-        int d_p = 0, ep = 0;
-        for (const auto &v: c_test_held.docs) {
-            for (const auto &d: v) {
-                softmax(b_test.localEta.data() + d_p * N_topics, eta_s.data(), N_topics);
-                for (const auto &tok: d.tokens) {
-                    const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
-                    double cur = 0;
-                    for (int k = 0; k < N_topics; ++k)
-                        cur += phi(k) * eta_s[k];
-                    lhoods(d_p, _) += tok.f * log(cur);
+        for (int t = 0; t < FLAGS_n_threads; ++t) {
+            threads[t] = thread([&](int kTh, int nTh) {
+                auto &eta_s = eta_softmax_th[kTh];
+                eta_s.resize((size_t)N_topics);
+                size_t doc_s, doc_e;
+                divide_interval((size_t)0, b_test.batch.size(), kTh, nTh, doc_s, doc_e);
+                for (size_t d_p = doc_s; d_p < doc_e; ++d_p) {
+                    int ep = b_test.batch[d_p].first;
+                    const auto &d = c_test_held.docs[ep][b_test.batch[d_p].second];
+                    softmax(b_test.localEta.data() + d_p * N_topics, eta_s.data(), N_topics);
+                    for (const auto &tok: d.tokens) {
+                        const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
+                        double cur = 0;
+                        for (int k = 0; k < N_topics; ++k)
+                            cur += phi(k) * eta_s[k];
+                        lhoods(d_p, _) += tok.f * log(cur);
+                    }
                 }
-                ++d_p;
-            }
-            ++ep;
+            }, t, FLAGS_n_threads);
         }
+        for (auto &th: threads) th.join();
         LOG(INFO) << "EstimateLL: accumulating took " << ck.toc();
     }
 
