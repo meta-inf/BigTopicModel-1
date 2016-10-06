@@ -111,7 +111,9 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
 
     // localPhiAux, localPhiNormalized, localPhiSoftmax
     localPhiAux.resize(size_t(c_train.ep_e - c_train.ep_s));
-    for (auto &arr: localPhiAux) arr = ZEROS_LIKE(localPhi[0]);
+    if (FLAGS_psgld) {
+        for (auto &arr: localPhiAux) arr = ZEROS_LIKE(localPhi[0]);
+    }
     localPhiNormalized.resize(size_t(c_train.ep_e - c_train.ep_s));
     for (auto &arr: localPhiNormalized) arr = ZEROS_LIKE(localPhi[0]);
     localPhiSoftmax.resize(size_t(c_train.ep_e - c_train.ep_s));
