@@ -12,7 +12,7 @@ DEFINE_int32(n_sgld_phi, 2, "number of sgld iterations for phi");
 DEFINE_int32(n_sgld_eta, 4, "number of sgld iterations for eta");
 DEFINE_int32(n_mh_steps, 16, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_mh_thin, 1, "number of burn-in mh iterations for Z");
-DEFINE_int32(n_infer_burn_in, 16, "number of burn-in steps in test");
+DEFINE_int32(n_infer_burn_in, 8, "number of burn-in steps in test"); // FIXME: 16
 DEFINE_int32(n_infer_samples, 1, "number of samples used in test");
 DEFINE_int32(n_threads, 2, "number of threads used");
 DEFINE_int32(n_topics, 50, "number of topics");
@@ -144,20 +144,15 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
 }
 
 void SampleBatchId (vector<int> *dst, int n_total, int n_batch, rand_data *rd) {
-    // TODO: Optimize this now that we have ~10K docs.
     m_assert(n_total >= n_batch);
     auto &d = *dst;
-    d.resize((size_t)n_batch);
-    for (int j = 0; j < n_batch; ++j) {
-        for (bool repl = true; repl; ) {
-            d[j] = irand(rd, 0, n_total);
-            repl = false;
-            for (int k = 0; k < j; ++k) {
-                if ((repl = (d[k] == d[j])))
-                    break;
-            }
-        }
+    d.resize((size_t)n_total);
+    for (int i = 0; i < n_total; ++i) d[i] = i;
+    for (int i = 0; i < n_batch; ++i) {
+        int p = irand(rd, i, n_total);
+        swap(d[i], d[p]);
     }
+    d.resize((size_t)n_batch); // will truncate
 }
 
 inline size_t cva_row_sum(CVA<SpEntry>::Row &row) {
@@ -218,10 +213,12 @@ void pDTM::_SyncPhi() {
 void pDTM::IterInit(int iter) {
     _SyncPhi();
 
+
     // {{{ Exchange PhiTm1, PhiTp1
     auto exTm1 = [&]() {
         if (pRowId == 0) return;
         MPI_Status status;
+        LOG(INFO) << "Sending " << eig_size(localPhi[0]) << " " << procId << " to " << procId-nProcCols;
         int e = MPI_Sendrecv((void*)localPhi[0].data(), eig_size(localPhi[0]),
                 MPI_DOUBLE, procId - nProcCols, iter * 4,
                 (void*)phiTm1.data(), eig_size(phiTm1),
@@ -297,6 +294,7 @@ void pDTM::BatchState::UpdateEta(int n_iter) {
 void pDTM::Infer() {
     for (int iter = 0; iter < FLAGS_n_iters; ++iter) {
         IterInit(iter);
+        Clock clk; clk.tic(); // FIXME
 
         if (iter % FLAGS_report_every == 0) {
             EstimateLL();
@@ -304,8 +302,10 @@ void pDTM::Infer() {
             LOG(INFO) << iter << " iterations finished.";
         }
 
+        Clock clk1; clk1.tic();
         // Z
         b_train.UpdateZ();
+        LOG(INFO) << clk1.toc() << " =Z"; clk1.tic();
 
         // Eta
         b_train.UpdateEta(iter);
@@ -315,13 +315,17 @@ void pDTM::Infer() {
             sumEta.row(ep) += b_train.localEta.row(d) - globEta[ep].row(rank);
             globEta[ep].row(rank) = b_train.localEta.row(d);
         }
+        LOG(INFO) << clk1.toc() << " =Eta"; clk1.tic();
 
         // Phi
         UpdatePhi(iter);
+        LOG(INFO) << clk1.toc() << " =Phi"; clk1.tic();
 
         // Alpha;
         UpdateAlpha(iter);
         MPI_Barrier(commRow);
+
+        LOG(INFO) << "Iter takes " << clk.toc() << endl;
     }
 }
 
@@ -331,7 +335,7 @@ void pDTM::UpdateAlpha(int n_iter)
     auto excM1 = [&] () {
         if (pRowId == 0) return; // Initialized to 0 as expected
         MPI_Status status;
-        const double *send_data = alpha.data() + N_topics;
+        double *send_data = alpha.data() + N_topics;
         double *recv_data = alpha.data();
         int r = MPI_Sendrecv(
                 send_data, N_topics, MPI_DOUBLE, procId - nProcCols, n_iter * 4 + 2,
@@ -342,7 +346,7 @@ void pDTM::UpdateAlpha(int n_iter)
     auto excP1 = [&] () {
         if (pRowId == nProcRows - 1) return;
         MPI_Status status;
-        const double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
+        double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
         double *recv_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
         int r = MPI_Sendrecv(
                 send_data, N_topics, MPI_DOUBLE, procId + nProcCols, n_iter * 4 + 3,
@@ -445,20 +449,20 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
 void pDTM::UpdatePhi(int n_iter)
 {
     // Set localPhiBak.
-    for (size_t e = 0; e < localPhi.size(); ++e) {
-        const double *dat = localPhiBak[e].data();
+    for (size_t e = 0; e < localPhi.size(); ++e)
         localPhiBak[e] = localPhi[e];
-        m_assert(localPhiBak[e].data() == dat); // FIXME
-    }
 
     for (int _ = 0; _ < FLAGS_n_sgld_phi; ++_) {
+        Clock ck; ck.tic(); // FIXME
         if (_ > 0) {
             _SyncPhi(); // Normalizers has changed
         }
+        LOG(INFO) << "SyncPhi took " << ck.toc(); ck.tic();
         for (int th = 0; th < FLAGS_n_threads; ++th) {
             threads[th] = thread(&pDTM::UpdatePhi_th, this, FLAGS_n_sgld_phi * n_iter + _, th, FLAGS_n_threads);
         }
         for (auto &th: threads) th.join();
+        LOG(INFO) << "UpdatePhi_th took " << ck.toc(); ck.tic();
     }
 }
 
@@ -525,9 +529,11 @@ void pDTM::BatchState::InitZ() {
         }
     }
 
+    Clock clk; clk.tic(); // FIXME
     // Reset cwk (cdk is cleared in sync())
     for (auto &a: cwk) a *= 0;
     ck *= 0;
+    dense_cwk_overhead = clk.toc();
 
     auto worker = [this](int kTh, int nTh) {
         for (int e = 0; e < corpus.ep_e - corpus.ep_s; ++e)
@@ -553,6 +559,7 @@ void pDTM::BatchState::UpdateZ() {
     cdk.sync();
 
     // FIXME: THIS IS SLOW. and zeroing out cwk is slow since it's sparse. use link lists with locks.
+    Clock clk; clk.tic(); // FIXME
     Arr ck_ro = ZEROS_LIKE(ck);
     for (int e = 0; e < ck.rows(); ++e) {
         for (int t = 0; t < ck.cols(); ++t)
@@ -560,6 +567,8 @@ void pDTM::BatchState::UpdateZ() {
                 ck_ro(e, t) += cwk[e](t, w);
     }
     MPI_Allreduce(ck_ro.data(), ck.data(), (int)ck.size(), MPI_DOUBLE, MPI_SUM, p.commRow);
+    LOG(INFO) << "Gathering ck took " << clk.toc() + dense_cwk_overhead; // FIXME
+    dense_cwk_overhead = 0; // FIXME
 }
 
 // Sample Z|MB.
@@ -620,6 +629,7 @@ inline Arr logsumexp (const Arr &src) {
 }
 
 void pDTM::EstimateLL() {
+    Clock ck; ck.tic(); // FIXME
     // Init b_test
     b_test.localEta *= 0;
     // Divide batch
@@ -632,11 +642,19 @@ void pDTM::EstimateLL() {
     MPI_Barrier(commRow);
     int n_iter = 0; // Determines learning rate for UpdateEta
 
+    LOG(INFO) << "EstimateLL: init took " << ck.toc();
+    ck.tic();
+
     // Burn-in
     for (int i = 0; i < FLAGS_n_infer_burn_in; ++i) {
+        Clock ck; ck.tic();
         b_test.UpdateZ();
+        LOG(INFO) << "Z: " << ck.toc(); ck.tic();
         b_test.UpdateEta(n_iter++);
+        LOG(INFO) << "Eta: " << ck.toc(); 
     }
+
+    LOG(INFO) << "EstimateLL: burn-in took " << ck.toc() << " / " << FLAGS_n_infer_burn_in;
 
     // Draw samples and estimate
     // TODO: persistent storage for lhoods and thread-safe for etaSoftmax ?
@@ -647,6 +665,7 @@ void pDTM::EstimateLL() {
         b_test.UpdateEta(n_iter++);
         assert(!b_test.localEta.hasNaN());
         // TODO: multi-thread for this
+        ck.tic();
         int d_p = 0, ep = 0;
         for (const auto &v: c_test_held.docs) {
             for (const auto &d: v) {
@@ -662,6 +681,7 @@ void pDTM::EstimateLL() {
             }
             ++ep;
         }
+        LOG(INFO) << "EstimateLL: accumulating took " << ck.toc();
     }
 
     assert(! lhoods.hasNaN());

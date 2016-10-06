@@ -232,7 +232,6 @@ void SampleBatchId (vector<int> *dst, int n_total, int n_batch, rand_data *rd) {
 void DTM::UpdateWorker::SampleBatch (EpochSample *st) {
 	int n_batch = min(st->corpus->K_doc, K_doc_batch);
 	SampleBatchId(&st->b.doc_id, st->corpus->K_doc, n_batch, rd_data_);
-	sort(st->b.doc_id.begin(), st->b.doc_id.end()); // FIXME
 }
 
 EpCorpus *FIXME_th, *FIXME_to;

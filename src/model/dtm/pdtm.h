@@ -23,21 +23,23 @@ class pDTM {
 
 	vector<size_t> nEpDocs;
 	LocalCorpus c_train, c_test_observed, c_test_held;
-	vector<Arr> localPhi, localPhiAux;
+	vector<Arr> localPhi, localPhiAux;                                  // Vl * K * Nep * 2 * 8 = 15M * 160 = 2G / cols
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
-    vector<Arr> localPhiNormalized, localPhiSoftmax, localPhiBak;
-	vector<Arr> globEta;
+
+    vector<Arr> localPhiNormalized, localPhiSoftmax, localPhiBak;       // Vl * K * 8 * 3 = 3G / cols
+	vector<Arr> globEta;                                                // N_row_doc * K * 8 = 0.6M * 1K * 8 = 4.8G
 	Arr sumEta, alpha;
     // Sampling eta requires same random settings in a row
 	vector<rand_data> rd_data, rd_data_eta;
 
     struct BatchState {
         BatchState(LocalCorpus &corpus, int n_max_batch, pDTM &par);
+        double dense_cwk_overhead; // FIXME
         int N_glob_vocab, N_topics;
         pDTM &p;
         DCMSparse cdk;
-        vector<Arr> cwk;
+        vector<Arr> cwk;                                                // 2G / cols (train&test)
         Arr ck; // row marginal for cwk, (n_row_ep, n_topics)
         Arr localEta;
         vector<pair<int, size_t>> batch;
