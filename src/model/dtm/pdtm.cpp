@@ -7,12 +7,13 @@
 using namespace std;
 
 DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   // TODO
-DEFINE_bool(show_topics, false, "Display top 10 words in each topic"); // TODO
+DEFINE_bool(show_topics, false, "Display top K words in each topic");
+DEFINE_int32(show_topics_K, 10, "Display top K words in each topic");
 DEFINE_int32(n_sgld_phi, 2, "number of sgld iterations for phi");
 DEFINE_int32(n_sgld_eta, 4, "number of sgld iterations for eta");
 DEFINE_int32(n_mh_steps, 16, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_mh_thin, 1, "number of burn-in mh iterations for Z");
-DEFINE_int32(n_infer_burn_in, 8, "number of burn-in steps in test"); // FIXME: 16
+DEFINE_int32(n_infer_burn_in, 16, "number of burn-in steps in test");
 DEFINE_int32(n_infer_samples, 1, "number of samples used in test");
 DEFINE_int32(n_threads, 2, "number of threads used");
 DEFINE_int32(n_topics, 50, "number of topics");
@@ -33,7 +34,7 @@ DEFINE_double(sig_phi, 0.2, "... for phi_t|phi_{tm1}");
 DEFINE_double(sig_phi0, 10, "... for phi_0");
 DEFINE_double(sig_eta, 4, "... for P(eta_{td}|alpha_t)");
 DEFINE_int32(report_every, 1, "Time in iterations between two consecutive reports");
-DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never"); // TODO
+DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
 
 DEFINE_bool(_loadphi, false, "for debugging; fixme");
 
@@ -58,13 +59,13 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     localEta = Arr::Zero(n_max_batch, p.N_topics);
 }
 
-pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, int N_vocab_,
-           int procId_, int nProcRows_, int nProcCols_) :
+pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
+           int N_vocab_, int procId_, int nProcRows_, int nProcCols_) :
 //    cwk(nProcCols_, 1, N_topics * (corpus_.ep_e - corpus_.ep_s), N_vocab_, column_partition, nProcCols_, procId_, FLAGS_n_threads),
     procId(procId_), nProcRows(nProcRows_), nProcCols(nProcCols_),
     N_glob_vocab(N_vocab_), N_topics(FLAGS_n_topics), N_batch(FLAGS_n_doc_batch),
     threads(FLAGS_n_threads),
-    c_train(c_train), c_test_held(c_test_held), c_test_observed(c_test_observed),
+    c_train(c_train), c_test_held(c_test_held), c_test_observed(c_test_observed), dict(dict),
     b_train(this->c_train, N_batch * (c_train.ep_e - c_train.ep_s), *this),
     b_test(this->c_test_observed, (int)this->c_test_observed.sum_n_docs, *this)
 {
@@ -294,9 +295,13 @@ void pDTM::Infer() {
 
         if (iter % FLAGS_report_every == 0) {
             EstimateLL();
+            if (FLAGS_show_topics) ShowTopics(iter);
         } else if (iter % 10 == 0) {
             LOG(INFO) << iter << " iterations finished.";
         }
+
+        if (FLAGS_dump_every >= 1 && iter % FLAGS_dump_every == 0)
+            DumpParams();
 
         Clock clk1; clk1.tic();
         // Z
@@ -697,3 +702,69 @@ void pDTM::EstimateLL() {
     }
 }
 
+// Assume logPhiNormalized is up to date
+void pDTM::DumpParams() {
+    string path = FLAGS_dump_prefix + "-" + to_string(pRowId) + "_" + to_string(pColId);
+
+    // {{{ Phi
+    for (int ep = 0; ep < c_train.ep_e - c_train.ep_s; ++ep) {
+        int g_ep = ep + c_train.ep_s;
+        ofstream fout(path + "-ep" + to_string(g_ep) + ".phi");
+        fout << c_train.vocab_s << " " << c_train.vocab_e << endl;
+        for (int t = 0; t < N_topics; ++t) {
+            for (int v = 0; v < c_train.vocab_e - c_train.vocab_s; ++v)
+                fout << localPhiNormalized[ep](t, v) << " ";
+            fout << endl;
+        }
+    }
+    // }}}
+
+    // {{{ Alpha
+    if (pColId == 0) {
+        for (int ep = 0; ep < c_train.ep_e - c_train.ep_s; ++ep) {
+            int g_ep = ep + c_train.ep_s;
+            ofstream fout(path + "-ep" + to_string(g_ep) + ".alpha");
+            for (int t = 0; t < N_topics; ++t) {
+                fout << alpha(ep, t) << " ";
+            }
+            fout << endl;
+        }
+    }
+    // }}}
+}
+
+void pDTM::ShowTopics(int iter) {
+    int K = FLAGS_show_topics_K;
+    for (int ep = 0; ep < c_train.ep_e - c_train.ep_s; ++ep) {
+        int g_ep = ep + c_train.ep_s;
+        vector<pair<double, int>> buf_send((size_t)N_topics * K), buf_recv((size_t)N_topics * K * nProcCols);
+        vector<pair<double, int>> buf(size_t(c_train.vocab_e - c_train.vocab_s));
+        for (int t = 0; t < N_topics; ++t) {
+            for (int v = c_train.vocab_s; v < c_train.vocab_e; ++v) {
+                buf[v - c_train.vocab_s] = make_pair(-(double)localPhiNormalized[ep](t, v - c_train.vocab_s), v);
+            }
+            std::nth_element(buf.begin(), buf.begin() + K, buf.end());
+            std::copy(buf.begin(), buf.begin() + K, buf_send.begin() + t * K);
+        }
+        vector<size_t> offs_recv;
+        MPIHelpers::Allgatherv<pair<double, int>>(commRow, nProcCols, buf_send.size(), buf_send.data(), offs_recv, buf_recv);
+
+        if (pColId == 0) {
+            string path = FLAGS_dump_prefix + "-iter-" + to_string(iter) + "-ep-" + to_string(g_ep) + ".topics";
+            ofstream fout(path);
+            for (int t = 0; t < N_topics; ++t) {
+                buf.resize((size_t) K * nProcCols);
+                for (int c = 0; c < nProcCols; ++c) {
+                    auto s = buf_recv.begin() + buf_send.size() * c + K * t;
+                    std::copy(s, s + K, buf.begin() + K * c);
+                }
+                sort(buf.begin(), buf.end());
+                fout << "Topic " << t << ": ";
+                for (int k = 0; k < K; ++k) {
+                    fout << "(" << dict[buf[k].second] << ": " << exp(-buf[k].first) << ") ";
+                }
+                fout << endl;
+            }
+        }
+    }
+}

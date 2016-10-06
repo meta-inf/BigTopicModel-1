@@ -23,6 +23,8 @@ class pDTM {
 
 	vector<size_t> nEpDocs;
 	LocalCorpus c_train, c_test_observed, c_test_held;
+    Dict dict;
+
 	vector<Arr> localPhi, localPhiAux;                                  // Vl * K * Nep * 2 * 8 = 15M * 160 = 2G / cols
 	Arr localPhiZ;
 	Arr phiTm1, phiTp1;
@@ -59,13 +61,15 @@ class pDTM {
     void UpdatePhi_th(int phi_iter, int kTh, int nTh);
 	void UpdateAlpha(int n_iter);
     void EstimateLL();
+    void DumpParams();
 
 public:
 
-	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed,
+	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
          int n_vocab_, int procId_, int nProcRows_, int nProcCols_);
 
 	void Infer();
+    void ShowTopics(int iter);
 };
 
 #endif //BTM_DTM_PDTM_H
