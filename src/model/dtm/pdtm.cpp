@@ -37,7 +37,8 @@ DEFINE_int32(report_every, 1, "Time in iterations between two consecutive report
 DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
 
 DEFINE_bool(_profile, false, "Show profiling output");
-DEFINE_bool(_loadphi, false, "for debugging; fixme");
+DEFINE_bool(_loadphi, false, "Import parameter in Blei dtm's format; for single machine only");
+DEFINE_string(_loadphi_fmt, "/home/if/recycle_shift/dtm/dtm/dat/drun50/lda-seq/topic-%03d-TEP29-var-e-log-prob.dat", "");
 
 DECLARE_int32(n_iters);
 DECLARE_string(dump_prefix);
@@ -93,11 +94,11 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
                 }
             }
         };
-        m_assert(FLAGS_n_topics==20);
+        m_assert(FLAGS_n_vocab==8000 && n_row_eps==13);
         Arr phi_true[FLAGS_n_topics];
         for (int t = 0; t < FLAGS_n_topics; ++t) {
             char buf[100];
-            sprintf(buf, "/home/dc/recycle_shift/dtm/dtm/dat/drun/lda-seq/topic-%03d-var-e-log-prob.dat", t);
+            sprintf(buf, FLAGS__loadphi_fmt, t);
             readMat(string(buf), phi_true[t], 8000, 13);
         }
         for (int e = 0; e < c_train.ep_e; ++e) {
@@ -133,12 +134,16 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     alpha = Arr::Zero(n_row_eps + 2, N_topics);
 
     // rd_data
-    srand(233u * (nProcCols * nProcRows) + procId);
+    uint32_t s0 = 233u;
+    if (!FLAGS_fix_random_seed) {
+        s0 = random_device{}();
+    }
+    srand(s0 * (nProcCols * nProcRows) + procId);
     rd_data.resize((size_t)FLAGS_n_threads);
     for (auto &r: rd_data) rand_init(&r, (unsigned)rand());
 
     // rd_data_eta is the same inside a row
-    srand(233u * nProcRows + pRowId);
+    srand(s0 * nProcRows + pRowId);
     rd_data_eta.resize((size_t)FLAGS_n_threads);
     for (auto &r: rd_data_eta) rand_init(&r, (unsigned)rand());
 
@@ -656,36 +661,49 @@ void pDTM::EstimateLL() {
     LOG(INFO) << "EstimateLL: burn-in took " << ck.toc() << " / " << FLAGS_n_infer_burn_in;
 
     // Draw samples and estimate
-    Arr lhoods = Arr::Zero(c_test_observed.sum_n_docs, FLAGS_n_infer_samples);
+    // FIXME: This is not affordable for large datasets. Split document in estimation instead.
+    Arr meanEtaSftmax = ZEROS_LIKE(b_test.localEta);
     vector<double> eta_softmax_th[MAX_THREADS];
 
     for (int _ = 0; _ < FLAGS_n_infer_samples; ++_) {
         b_test.UpdateZ();
         b_test.UpdateEta(n_iter++);
         assert(!b_test.localEta.hasNaN());
-        ck.tic();
-#pragma omp parallel for schedule(static, 1)
-        for (int t = 0; t < FLAGS_n_threads; ++t) {
-            int nTh = FLAGS_n_threads, kTh = t;
-            auto &eta_s = eta_softmax_th[kTh];
-            eta_s.resize((size_t)N_topics);
-            size_t doc_s, doc_e;
-            divide_interval((size_t)0, b_test.batch.size(), kTh, nTh, doc_s, doc_e);
-            for (size_t d_p = doc_s; d_p < doc_e; ++d_p) {
-                int ep = b_test.batch[d_p].first;
-                const auto &d = c_test_held.docs[ep][b_test.batch[d_p].second];
-                softmax(b_test.localEta.data() + d_p * N_topics, eta_s.data(), N_topics);
-                for (const auto &tok: d.tokens) {
-                    const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
-                    double cur = 0;
-                    for (int k = 0; k < N_topics; ++k)
-                        cur += phi(k) * eta_s[k];
-                    lhoods(d_p, _) += tok.f * log(cur);
-                }
+#pragma omp parallel for schedule(static)
+        for (int j = 0; j < b_test.localEta.rows(); ++j) {
+            auto &eta_s = eta_softmax_th[omp_get_thread_num()];
+            eta_s.resize(N_topics);
+            softmax(b_test.localEta.data() + j * N_topics, eta_s.data(), N_topics);
+            for (int k = 0; k < N_topics; ++k) {
+                meanEtaSftmax(j, k) += eta_s[k];
             }
         }
-        LOG(INFO) << "EstimateLL: accumulating took " << ck.toc();
     }
+    meanEtaSftmax /= FLAGS_n_infer_samples;
+
+    // log likelihood sum(log(p(w_i|{Phi,Alpha,W_{to}}))) (Denote as p(w_i|E))
+    // p(w_i|E)=\int_{Eta} Phi_{w_i} \dot softmax(Eta) p(Eta|E) d{Eta}
+    //         =Phi_{w_i} \dot E[softmax(Eta)]
+    Arr lhoods = Arr::Zero(c_test_observed.sum_n_docs, 1);
+    ck.tic();
+#pragma omp parallel for schedule(static, 1)
+    for (int t = 0; t < FLAGS_n_threads; ++t) {
+        int nTh = FLAGS_n_threads, kTh = t;
+        size_t doc_s, doc_e;
+        divide_interval((size_t)0, b_test.batch.size(), kTh, nTh, doc_s, doc_e);
+        for (size_t d_p = doc_s; d_p < doc_e; ++d_p) {
+            int ep = b_test.batch[d_p].first;
+            const auto &d = c_test_held.docs[ep][b_test.batch[d_p].second];
+            for (const auto &tok: d.tokens) {
+                const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
+                double cur = 0;
+                for (int k = 0; k < N_topics; ++k)
+                    cur += phi(k) * meanEtaSftmax(d_p, k);
+                lhoods(d_p, 0) += tok.f * log(cur);
+            }
+        }
+    }
+    LOG(INFO) << "EstimateLL: accumulating took " << ck.toc();
 
     assert(! lhoods.hasNaN());
     if (! lhoods.allFinite()) { // may contain -inf
@@ -694,7 +712,7 @@ void pDTM::EstimateLL() {
     else {
         long double arr[2] = {logsumexp(lhoods).sum(), c_test_held.sum_tokens}, rArr[2];
         MPI_Allreduce(arr, rArr, 2, MPI_LONG_DOUBLE, MPI_SUM, commRow);
-        long double logEvi = rArr[0] - log(FLAGS_n_infer_samples) * c_test_held.sum_n_docs;
+        long double logEvi = rArr[0];// - log(FLAGS_n_infer_samples) * c_test_held.sum_n_docs;
         double ppl = (double) exp(-logEvi / rArr[1]);
         LOG(INFO) << "Perplexity in row = " << ppl << " for " << rArr[1] << " tokens.";
     }
