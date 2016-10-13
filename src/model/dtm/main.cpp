@@ -5,7 +5,8 @@
 using namespace std;
 
 DEFINE_string(corpus_prefix,
-              "/home/if/wkspace/btm_data/nips.hb-2x2",
+              "/home/if/wkspace/btm_data/nips.hb-1x1",
+//              "/home/if/wkspace/btm_data/nips.hb-2x2",
               "prefix for corpus and dict");
 DEFINE_string(dump_prefix, "./last", "dump prefix"); // TODO
 DEFINE_int32(n_iters, 10000, "# gibbs sampling iterations");

@@ -36,12 +36,14 @@ DEFINE_double(sig_eta, 4, "... for P(eta_{td}|alpha_t)");
 DEFINE_int32(report_every, 1, "Time in iterations between two consecutive reports");
 DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
 
+DEFINE_bool(_profile, false, "Show profiling output");
 DEFINE_bool(_loadphi, false, "for debugging; fixme");
 
 DECLARE_int32(n_iters);
 DECLARE_string(dump_prefix);
 
 #define ZEROS_LIKE(a) Arr::Zero(a.rows(), a.cols())
+#define PRF(stmt) do { if (FLAGS__profile) { stmt } } while (0)
 
 pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     p(p_), corpus(corpus_),
@@ -192,9 +194,10 @@ void pDTM::_SyncPhi() {
         for (int j = 0; j < localPhiZ.cols(); ++j)
             localPhiZ(i, j) = log(localPhiZ(i, j));
     }
-    auto worker = [this](int kTh, int nTh) {
+#pragma omp parallel for schedule(static, 1)
+    for (int kTh = 0; kTh < FLAGS_n_threads; ++kTh) {
         int k_s, k_e;
-        divide_interval(0, N_topics, kTh, nTh, k_s, k_e);
+        divide_interval(0, N_topics, kTh, FLAGS_n_threads, k_s, k_e);
         for (int e = 0; e < c_train.ep_e - c_train.ep_s; ++e)
             for (int k = k_s; k < k_e; ++k) {
                 for (int v = 0; v < c_train.vocab_e - c_train.vocab_s; ++v) {
@@ -203,11 +206,7 @@ void pDTM::_SyncPhi() {
                     localPhiSoftmax[e](k, v) = exp(cv);
                 }
             }
-    };
-    for (int t = 0; t < FLAGS_n_threads; ++t) {
-        threads[t] = thread(worker, t, FLAGS_n_threads);
     }
-    for (auto &th: threads) th.join();
 }
 
 void pDTM::IterInit(int iter) {
@@ -284,10 +283,10 @@ void pDTM::IterInit(int iter) {
 // UpdateZ and updateEta won't change persistent state (sample points etc.)
 
 void pDTM::BatchState::UpdateEta(int n_iter) {
-    for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_] = thread(&pDTM::BatchState::UpdateEta_th, this, n_iter, _, FLAGS_n_threads);
-    for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_].join();
+#pragma omp parallel for schedule(static, 1)
+    for (int _ = 0; _ < FLAGS_n_threads; ++_) {
+        UpdateEta_th(n_iter, _, FLAGS_n_threads);
+    }
 }
 
 void pDTM::Infer() {
@@ -308,7 +307,7 @@ void pDTM::Infer() {
         Clock clk1; clk1.tic();
         // Z
         b_train.UpdateZ();
-        LOG(INFO) << clk1.toc() << " =Z"; clk1.tic();
+        PRF(LOG(INFO) << clk1.toc() << " =Z"; clk1.tic(););
 
         // Eta
         b_train.UpdateEta(iter);
@@ -318,17 +317,17 @@ void pDTM::Infer() {
             sumEta.row(ep) += b_train.localEta.row(d) - globEta[ep].row(rank);
             globEta[ep].row(rank) = b_train.localEta.row(d);
         }
-        LOG(INFO) << clk1.toc() << " =Eta"; clk1.tic();
+        PRF(LOG(INFO) << clk1.toc() << " =Eta"; clk1.tic(););
 
         // Phi
         UpdatePhi(iter);
-        LOG(INFO) << clk1.toc() << " =Phi"; clk1.tic();
+        PRF(LOG(INFO) << clk1.toc() << " =Phi"; clk1.tic(););
 
         // Alpha;
         UpdateAlpha(iter);
         MPI_Barrier(commRow);
 
-        LOG(INFO) << "Iter takes " << clk.toc() << endl;
+        PRF(LOG(INFO) << "Iter takes " << clk.toc() << endl;);
     }
 }
 
@@ -459,12 +458,12 @@ void pDTM::UpdatePhi(int n_iter) {
         if (_ > 0) {
             _SyncPhi(); // Normalizers has changed
         }
-        LOG(INFO) << "SyncPhi took " << ck.toc(); ck.tic();
+        PRF(LOG(INFO) << "SyncPhi took " << ck.toc(); ck.tic(););
+#pragma omp parallel for schedule(static, 1)
         for (int th = 0; th < FLAGS_n_threads; ++th) {
-            threads[th] = thread(&pDTM::UpdatePhi_th, this, FLAGS_n_sgld_phi * n_iter + _, th, FLAGS_n_threads);
+            UpdatePhi_th(FLAGS_n_sgld_phi * n_iter + _, th, FLAGS_n_threads);
         }
-        for (auto &th: threads) th.join();
-        LOG(INFO) << "UpdatePhi_th took " << ck.toc(); ck.tic();
+        PRF(LOG(INFO) << "UpdatePhi_th took " << ck.toc(); ck.tic(););
     }
 }
 
@@ -542,20 +541,18 @@ void pDTM::BatchState::InitZ() {
             for (int v = kTh; v < corpus.vocab_e - corpus.vocab_s; v += nTh)
                 altWord[e][v].Rebuild(p.localPhiNormalized[e].col(v));
     };
-    vector<thread> threads((size_t)FLAGS_n_threads);
+#pragma omp parallel for schedule(static, 1)
     for (int t = 0; t < FLAGS_n_threads; ++t) {
-        threads[t] = thread(worker, t, FLAGS_n_threads);
+        worker(t, FLAGS_n_threads);
     }
-    for (auto &th: threads) th.join();
 }
 
 void pDTM::BatchState::UpdateZ() {
     InitZ();
 
+#pragma omp parallel for schedule(static, 1)
     for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_] = thread(&pDTM::BatchState::UpdateZ_th, this, _, FLAGS_n_threads);
-    for (int _ = 0; _ < FLAGS_n_threads; ++_)
-        p.threads[_].join();
+        UpdateZ_th(_, FLAGS_n_threads);
 
     // TODO: if DCMSparse permitting, we can sync after the last iteration when testing.
     cdk.sync();
@@ -569,7 +566,7 @@ void pDTM::BatchState::UpdateZ() {
                 ck_ro(e, t) += cwk[e](t, w);
     }
     MPI_Allreduce(ck_ro.data(), ck.data(), (int)ck.size(), MPI_DOUBLE, MPI_SUM, p.commRow);
-    LOG(INFO) << "Gathering ck took " << clk.toc() + dense_cwk_overhead; // FIXME
+    PRF(LOG(INFO) << "Gathering ck took " << clk.toc() + dense_cwk_overhead;); // FIXME
     dense_cwk_overhead = 0; // FIXME
 }
 
@@ -651,9 +648,9 @@ void pDTM::EstimateLL() {
     for (int i = 0; i < FLAGS_n_infer_burn_in; ++i) {
         Clock ck; ck.tic();
         b_test.UpdateZ();
-        LOG(INFO) << "Z: " << ck.toc(); ck.tic();
+        PRF(LOG(INFO) << "Z: " << ck.toc(); ck.tic(););
         b_test.UpdateEta(n_iter++);
-        LOG(INFO) << "Eta: " << ck.toc(); 
+        PRF(LOG(INFO) << "Eta: " << ck.toc(););
     }
 
     LOG(INFO) << "EstimateLL: burn-in took " << ck.toc() << " / " << FLAGS_n_infer_burn_in;
@@ -667,27 +664,26 @@ void pDTM::EstimateLL() {
         b_test.UpdateEta(n_iter++);
         assert(!b_test.localEta.hasNaN());
         ck.tic();
+#pragma omp parallel for schedule(static, 1)
         for (int t = 0; t < FLAGS_n_threads; ++t) {
-            threads[t] = thread([&](int kTh, int nTh) {
-                auto &eta_s = eta_softmax_th[kTh];
-                eta_s.resize((size_t)N_topics);
-                size_t doc_s, doc_e;
-                divide_interval((size_t)0, b_test.batch.size(), kTh, nTh, doc_s, doc_e);
-                for (size_t d_p = doc_s; d_p < doc_e; ++d_p) {
-                    int ep = b_test.batch[d_p].first;
-                    const auto &d = c_test_held.docs[ep][b_test.batch[d_p].second];
-                    softmax(b_test.localEta.data() + d_p * N_topics, eta_s.data(), N_topics);
-                    for (const auto &tok: d.tokens) {
-                        const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
-                        double cur = 0;
-                        for (int k = 0; k < N_topics; ++k)
-                            cur += phi(k) * eta_s[k];
-                        lhoods(d_p, _) += tok.f * log(cur);
-                    }
+            int nTh = FLAGS_n_threads, kTh = t;
+            auto &eta_s = eta_softmax_th[kTh];
+            eta_s.resize((size_t)N_topics);
+            size_t doc_s, doc_e;
+            divide_interval((size_t)0, b_test.batch.size(), kTh, nTh, doc_s, doc_e);
+            for (size_t d_p = doc_s; d_p < doc_e; ++d_p) {
+                int ep = b_test.batch[d_p].first;
+                const auto &d = c_test_held.docs[ep][b_test.batch[d_p].second];
+                softmax(b_test.localEta.data() + d_p * N_topics, eta_s.data(), N_topics);
+                for (const auto &tok: d.tokens) {
+                    const auto &phi = localPhiSoftmax[ep].col(tok.w - c_test_held.vocab_s);
+                    double cur = 0;
+                    for (int k = 0; k < N_topics; ++k)
+                        cur += phi(k) * eta_s[k];
+                    lhoods(d_p, _) += tok.f * log(cur);
                 }
-            }, t, FLAGS_n_threads);
+            }
         }
-        for (auto &th: threads) th.join();
         LOG(INFO) << "EstimateLL: accumulating took " << ck.toc();
     }
 

@@ -21,13 +21,6 @@ using std::pair;
 #define TICK(id) auto id=chrono::system_clock::now()
 #define TOCK(id) chrono::duration<double>(chrono::system_clock::now()-id).count()
 
-//#define PROFILE1
-#ifdef PROFILE1
-#define PRF(exp) exp
-#else
-#define PRF(exp)
-#endif
-
 #define m_assert(exp) do {\
 	if (!(exp)) { \
 		fprintf(stderr, "%s() line %d: assertion `%s` failed.\n", __func__, __LINE__, #exp);\
