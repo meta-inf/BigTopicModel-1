@@ -71,12 +71,12 @@ void append_file(const vector<pair<int, string>> &inp_lines_, int c_ep, int col_
     int i = 0, d_id; string l;
     for (auto &t_: inp_lines) {
         tie(d_id, l) = t_;
-        if (i++ % 100 == 0) {
+        if (i++ % 5000 == 0) {
             cerr << "\rProcessing " + str(i) + "/" + str(inp_lines.size()) + "| Col " + str(col_id);
         }
         vector<string> words;
         split_to(l, ' ', words);
-        if (i < split) {
+        if (i <= split) {
             conv_list(words.begin(), words.end(), col_id, f_out_tr);
             doc_index_tr << d_id << endl;
         }

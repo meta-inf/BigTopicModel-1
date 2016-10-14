@@ -98,7 +98,7 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
         Arr phi_true[FLAGS_n_topics];
         for (int t = 0; t < FLAGS_n_topics; ++t) {
             char buf[100];
-            sprintf(buf, FLAGS__loadphi_fmt, t);
+            sprintf(buf, FLAGS__loadphi_fmt.c_str(), t);
             readMat(string(buf), phi_true[t], 8000, 13);
         }
         for (int e = 0; e < c_train.ep_e; ++e) {
