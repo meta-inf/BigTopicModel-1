@@ -1,7 +1,8 @@
 #include "lcorpus.h"
 using namespace std;
 
-DEFINE_int32(trunc_input, -1, "...");
+DEFINE_int32(trunc_input, -1, "Obsolete");
+DEFINE_int32(doc_per_epoch, -1, "Max #documents per epoch");
 
 LocalCorpus::LocalCorpus(const std::string &fileName) {
     ifstream fin(fileName);
@@ -18,14 +19,21 @@ LocalCorpus::LocalCorpus(const std::string &fileName) {
         int e_, n_docs;
         fin >> e_ >> n_docs;
         m_assert(e == e_);
-        sum_n_docs += n_docs;
         docs_e.resize((size_t)n_docs);
         for (int d = 0, m, t, f; d < n_docs; ++d) {
-            for (fin >> m; m--; ) {
+            for (fin >> m; m--;) {
                 fin >> t >> f;
                 docs_e[d].tokens.push_back(Token{t, f});
-                sum_tokens += f;
             }
+        }
+        if (FLAGS_doc_per_epoch > 0) {
+            std::random_shuffle(docs_e.begin(), docs_e.end());
+            docs_e.resize(min((size_t)FLAGS_doc_per_epoch, docs_e.size()));
+        }
+        sum_n_docs += docs_e.size();
+        for (const auto &v: docs_e) {
+            for (const auto &t: v.tokens)
+                sum_tokens += t.f;
         }
     }
     LOG(INFO) << sum_n_docs << " documents loaded\n";

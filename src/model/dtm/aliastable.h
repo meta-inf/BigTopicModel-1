@@ -81,7 +81,7 @@ void AliasTable::Rebuild (const array &log_prob) {
 	int lpos = 0, hpos = 0;
 	hvec[hpos++] = n; // note lvec != {}
 	for (int i = 0; i < n; ++i) {
-		if (prob[i] < invn + 1e-6) { // TODO magic number
+		if (prob[i] < invn + 1e-8) { // TODO magic number
 			lvec[lpos++] = i;
 		}
 		else {
@@ -97,7 +97,7 @@ void AliasTable::Rebuild (const array &log_prob) {
 		vp[vpos] = prob[l]; vi[vpos] = l; vh[vpos] = h;
 		vpos++;
 		prob[h] -= invn - prob[l];
-		if (prob[h] > invn + 1e-6) {
+		if (prob[h] > invn + 1e-8) {
 			++hpos;
 		}
 		else {

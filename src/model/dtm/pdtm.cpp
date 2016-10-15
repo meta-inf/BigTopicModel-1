@@ -217,7 +217,6 @@ void pDTM::_SyncPhi() {
 void pDTM::IterInit(int iter) {
     _SyncPhi();
 
-
     // {{{ Exchange PhiTm1, PhiTp1
     auto exTm1 = [&]() {
         if (pRowId == 0) return;
@@ -295,9 +294,11 @@ void pDTM::BatchState::UpdateEta(int n_iter) {
 }
 
 void pDTM::Infer() {
+    double sum_test_time = 0;
     for (int iter = 0; iter < FLAGS_n_iters; ++iter) {
         IterInit(iter);
-        Clock clk; clk.tic(); // FIXME
+        Clock clk;
+        auto clk_s = clk.tic(); // FIXME
 
         if (iter % FLAGS_report_every == 0) {
             EstimateLL();
@@ -308,6 +309,8 @@ void pDTM::Infer() {
 
         if (FLAGS_dump_every >= 1 && iter % FLAGS_dump_every == 0)
             DumpParams();
+
+        sum_test_time += clk.timeSpan(clk_s);
 
         Clock clk1; clk1.tic();
         // Z
@@ -334,6 +337,7 @@ void pDTM::Infer() {
 
         PRF(LOG(INFO) << "Iter takes " << clk.toc() << endl;);
     }
+    LOG(INFO) << "Test time overhead = " << sum_test_time;
 }
 
 void pDTM::UpdateAlpha(int n_iter)
