@@ -137,7 +137,6 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     uint32_t s0 = 233u;
     if (!FLAGS_fix_random_seed) {
         s0 = random_device{}();
-        LOG(INFO) << "s0 = " << s0;
     }
     srand(s0 * (nProcCols * nProcRows) + procId);
     rd_data.resize((size_t)FLAGS_n_threads);

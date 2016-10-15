@@ -54,6 +54,7 @@ int AliasTable::Sample (rand_data *rd) {
 
 template <typename array>
 void AliasTable::Rebuild (const array &log_prob) {
+	double tol = 5e-5 / n;
 
 	// Calc probability masses
 	std::vector<double> prob(n + 1);
@@ -81,7 +82,7 @@ void AliasTable::Rebuild (const array &log_prob) {
 	int lpos = 0, hpos = 0;
 	hvec[hpos++] = n; // note lvec != {}
 	for (int i = 0; i < n; ++i) {
-		if (prob[i] < invn + 1e-8) { // TODO magic number
+		if (prob[i] < invn + tol) { 
 			lvec[lpos++] = i;
 		}
 		else {
@@ -97,7 +98,7 @@ void AliasTable::Rebuild (const array &log_prob) {
 		vp[vpos] = prob[l]; vi[vpos] = l; vh[vpos] = h;
 		vpos++;
 		prob[h] -= invn - prob[l];
-		if (prob[h] > invn + 1e-8) {
+		if (prob[h] > invn + tol) {
 			++hpos;
 		}
 		else {
