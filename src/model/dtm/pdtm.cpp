@@ -3,6 +3,7 @@
 //
 
 #include "pdtm.h"
+#include "mpi_circular.h"
 
 using namespace std;
 
@@ -67,7 +68,7 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
 //    cwk(nProcCols_, 1, N_topics * (corpus_.ep_e - corpus_.ep_s), N_vocab_, column_partition, nProcCols_, procId_, FLAGS_n_threads),
     procId(procId_), nProcRows(nProcRows_), nProcCols(nProcCols_),
     N_glob_vocab(N_vocab_), N_topics(FLAGS_n_topics), N_batch(FLAGS_n_doc_batch),
-    threads(FLAGS_n_threads),
+    threads((size_t)FLAGS_n_threads),
     c_train(c_train), c_test_held(c_test_held), c_test_observed(c_test_observed), dict(dict),
     b_train(this->c_train, N_batch * (c_train.ep_e - c_train.ep_s), *this),
     b_test(this->c_test_observed, (int)this->c_test_observed.sum_n_docs, *this)
@@ -134,19 +135,30 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     alpha = Arr::Zero(n_row_eps + 2, N_topics);
 
     // rd_data
-    uint32_t s0 = 233u;
-    if (!FLAGS_fix_random_seed) {
-        s0 = random_device{}();
-        LOG(INFO) << "s0 = " << s0;
-    }
-    srand(s0 * (nProcCols * nProcRows) + procId);
     rd_data.resize((size_t)FLAGS_n_threads);
-    for (auto &r: rd_data) rand_init(&r, (unsigned)rand());
-
-    // rd_data_eta is the same inside a row
-    srand(s0 * nProcRows + pRowId);
     rd_data_eta.resize((size_t)FLAGS_n_threads);
-    for (auto &r: rd_data_eta) rand_init(&r, (unsigned)rand());
+    vector<uint32_t> seeds(rd_data.size()), seeds_eta(rd_data_eta.size());
+    if (FLAGS_fix_random_seed) {
+        LOG(INFO) << "Using fix random seed";
+        srand(233u * (nProcCols * nProcRows) + procId);
+        for (auto &v: seeds) v = (uint32_t)rand();
+        srand(233u * nProcRows + pRowId);
+        for (auto &v: seeds_eta) v = (uint32_t)rand();
+    }
+    else {
+        random_device rd;
+        for (auto &v: seeds) v = rd();
+        for (auto &v: seeds_eta) v = rd();
+        MPI_Bcast(seeds_eta.data(), (int)seeds_eta.size(), MPI_UINT32_T, 0, commRow);
+        string seeds_str = "";
+        for (auto v: seeds) seeds_str += to_string(v) + ":";
+        for (auto v: seeds_eta) seeds_str += to_string(v) + ":";
+        LOG(INFO) << "Seeds = " << seeds_str;
+    }
+    for (int i = 0; i < FLAGS_n_threads; ++i) {
+        rand_init(&rd_data[i], seeds[i]);
+        rand_init(&rd_data_eta[i], seeds_eta[i]);
+    }
 
     DLOG(INFO) << "init finished";
 }
@@ -221,33 +233,9 @@ void pDTM::IterInit(int iter) {
     _SyncPhi();
 
     // {{{ Exchange PhiTm1, PhiTp1
-    auto exTm1 = [&]() {
-        if (pRowId == 0) return;
-        MPI_Status status;
-        int e = MPI_Sendrecv((void*)localPhi[0].data(), eig_size(localPhi[0]),
-                MPI_DOUBLE, procId - nProcCols, iter * 4,
-                (void*)phiTm1.data(), eig_size(phiTm1),
-                MPI_DOUBLE, procId - nProcCols, iter * 4 + 1,
-                MPI_COMM_WORLD, &status);
-        assert(e == MPI_SUCCESS);
-    };
-    auto exTp1 = [&]() {
-        if (pRowId == nProcRows - 1) return;
-        MPI_Status status;
-        int e = MPI_Sendrecv((void*)localPhi.back().data(), eig_size(localPhi[0]),
-                MPI_DOUBLE, procId + nProcCols, iter * 4 + 1,
-                (void*)phiTp1.data(), eig_size(phiTp1),
-                MPI_DOUBLE, procId + nProcCols, iter * 4,
-                MPI_COMM_WORLD, &status);
-        assert(e == MPI_SUCCESS);
-    };
-    // Break blocking chain
-    if (pRowId & 1) {
-        exTp1(); exTm1();
-    }
-    else {
-        exTm1(); exTp1();
-    }
+    Circular<double>(localPhi[0].data(), localPhi.back().data(), phiTm1.data(), phiTp1.data(), eig_size(localPhi[0]), pRowId,
+                     (pRowId == 0 ? -1 : procId - nProcCols), (pRowId + 1 == nProcRows ? -1 : procId + nProcCols),
+                     iter * 4);
     // }}}
 
     // {{{ Sample batches
@@ -348,34 +336,13 @@ void pDTM::Infer() {
 void pDTM::UpdateAlpha(int n_iter)
 {
     // Request alphaT{pm}1
-    auto excM1 = [&] () {
-        if (pRowId == 0) return; // Initialized to 0 as expected
-        MPI_Status status;
-        double *send_data = alpha.data() + N_topics;
-        double *recv_data = alpha.data();
-        int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId - nProcCols, n_iter * 4 + 2,
-                recv_data, N_topics, MPI_DOUBLE, procId - nProcCols, n_iter * 4 + 3,
-                MPI_COMM_WORLD, &status);
-        assert(r == MPI_SUCCESS);
-    };
-    auto excP1 = [&] () {
-        if (pRowId == nProcRows - 1) return;
-        MPI_Status status;
-        double *send_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
-        double *recv_data = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
-        int r = MPI_Sendrecv(
-                send_data, N_topics, MPI_DOUBLE, procId + nProcCols, n_iter * 4 + 3,
-                recv_data, N_topics, MPI_DOUBLE, procId + nProcCols, n_iter * 4 + 2,
-                MPI_COMM_WORLD, &status);
-        assert(r == MPI_SUCCESS);
-    };
-    if (pRowId & 1) {
-        excP1(); excM1();
-    }
-    else {
-        excM1(); excP1();
-    }
+    double *alpha_tm1 = alpha.data();
+    const double *alpha_first = alpha.data() + N_topics;
+    const double *alpha_last = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
+    double *alpha_tp1 = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
+    Circular<double>(alpha_first, alpha_last, alpha_tm1, alpha_tp1, N_topics, pRowId,
+                     (pRowId == 0 ? -1 : procId - nProcCols), (pRowId + 1 == nProcRows ? -1 : procId + nProcCols),
+                     n_iter * 4 + 2);
 
     NormalDistribution normal;
     for (int ep = 0, ep_le = c_train.ep_e - c_train.ep_s; ep < ep_le; ++ep) {
@@ -485,9 +452,8 @@ void pDTM::UpdatePhi(int n_iter) {
 // Thread worker for UpdatePhi. Requires localPhiBak and localPhiSoftmax to be set.
 void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     // Get vocab subset to sample
-    int v_s, v_e;
-    divide_interval(c_train.vocab_s, c_train.vocab_e, kTh, nTh, v_s, v_e);
-    if (v_e == N_glob_vocab - 1) --v_e;
+    int k_s, k_e;
+    divide_interval(0, N_topics, kTh, nTh, k_s, k_e);
 
     double eps = FLAGS_sgld_phi_a * pow(FLAGS_sgld_phi_b + phi_iter, -FLAGS_sgld_phi_c);
     double sqrt_eps = sqrt(eps);
@@ -506,11 +472,10 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
          * phi += N(0, eps) + eps / 2 * (g_post + g_prior) */
 
         double K_post = (double) c_train.docs[ep_r].size() / N_batch;
-        for (int k = 0; k < N_topics; ++k) {
+        for (int k = k_s; k < k_e; ++k) {
             const auto &cwk_k = b_train.cwk[ep_r].row(k);
             double ck_k = b_train.ck(ep_r, k);
-            for (int w_g = v_s; w_g < v_e; ++w_g) {
-                int w_r = w_g - c_train.vocab_s;
+            for (int w_r = 0; w_r < c_train.vocab_e - c_train.vocab_s - 1; ++w_r) {
                 double post = K_post * (cwk_k[w_r] - ck_k * localPhiSoftmax[ep_r](k, w_r));
                 double prior = 0;
                 prior += (0 == ep_g) ?
