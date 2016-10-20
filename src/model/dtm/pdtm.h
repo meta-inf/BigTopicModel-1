@@ -10,6 +10,7 @@
 #include "lcorpus.h"
 #include "random.h"
 #include "dcm.h"
+#include "cm.h"
 #include "aliastable.h"
 
 class pDTM {
@@ -17,7 +18,7 @@ class pDTM {
 
 	MPI_Comm commRow;
 	int procId, nProcRows, nProcCols, pRowId, pColId;
-	int N_glob_vocab, N_topics, N_batch;
+	int N_glob_vocab, N_topics, N_batch, N_local_vocab;
 
     vector<thread> threads;
 
@@ -38,10 +39,10 @@ class pDTM {
     struct BatchState {
         BatchState(LocalCorpus &corpus, int n_max_batch, pDTM &par);
         double dense_cwk_overhead; // FIXME
-        int N_glob_vocab, N_topics;
+        int N_glob_vocab, N_topics, N_local_vocab;
         pDTM &p;
         DCMSparse cdk;
-        vector<Arr> cwk;                                                // 2G / cols (train&test)
+        CMSparse cwk;                                                   // 2G / cols (train&test)
         Arr ck; // row marginal for cwk, (n_row_ep, n_topics)
         Arr localEta;
         vector<pair<int, size_t>> batch;

@@ -49,15 +49,14 @@ DECLARE_string(dump_prefix);
 
 pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     p(p_), corpus(corpus_),
-    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads)
+    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads),
+    cwk((int)corpus_.docs.size() * p.N_topics, corpus_.vocab_e - corpus_.vocab_s, FLAGS_n_threads)
 {
     N_glob_vocab = p.N_glob_vocab; // Having problem putting them in the initializer list
+    N_local_vocab = corpus.vocab_e - corpus.vocab_s;
     N_topics = p.N_topics;
-    // cwk
-    size_t n_row_eps = corpus.docs.size();
-    int n_col_vocab = corpus.vocab_e - corpus.vocab_s;
-    cwk.resize(n_row_eps);
-    for (auto &a: cwk) a = Arr::Zero(N_topics, n_col_vocab);
+
+    int n_row_eps = (int)corpus_.docs.size();
     ck = Arr::Zero(n_row_eps, N_topics);
 
     localEta = Arr::Zero(n_max_batch, p.N_topics);
@@ -65,7 +64,6 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
 
 pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
            int N_vocab_, int procId_, int nProcRows_, int nProcCols_) :
-//    cwk(nProcCols_, 1, N_topics * (corpus_.ep_e - corpus_.ep_s), N_vocab_, column_partition, nProcCols_, procId_, FLAGS_n_threads),
     procId(procId_), nProcRows(nProcRows_), nProcCols(nProcCols_),
     N_glob_vocab(N_vocab_), N_topics(FLAGS_n_topics), N_batch(FLAGS_n_doc_batch),
     threads((size_t)FLAGS_n_threads),
@@ -73,6 +71,8 @@ pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_tes
     b_train(this->c_train, N_batch * (c_train.ep_e - c_train.ep_s), *this),
     b_test(this->c_test_observed, (int)this->c_test_observed.sum_n_docs, *this)
 {
+    N_local_vocab = c_train.vocab_e - c_train.vocab_s;
+
     pRowId = procId / nProcCols;
     pColId = procId % nProcCols;
     MPI_Comm_split(MPI_COMM_WORLD, pRowId, pColId, &commRow);
@@ -175,7 +175,7 @@ void SampleBatchId (vector<int> *dst, int n_total, int n_batch, rand_data *rd) {
     d.resize((size_t)n_batch); // will truncate
 }
 
-inline size_t cva_row_sum(CVA<SpEntry>::Row &row) {
+inline size_t cva_row_sum(const CVA<SpEntry>::Row &row) {
     size_t ret = 0;
     for (const auto &e: row) ret += e.v;
     return ret;
@@ -458,6 +458,8 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     double eps = FLAGS_sgld_phi_a * pow(FLAGS_sgld_phi_b + phi_iter, -FLAGS_sgld_phi_c);
     double sqrt_eps = sqrt(eps);
 
+    vector<double> post((size_t)N_local_vocab);
+
     // Sample.
     NormalDistribution normal;
     for (int ep_g = c_train.ep_s; ep_g < c_train.ep_e; ++ep_g) {
@@ -473,10 +475,18 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
 
         double K_post = (double) c_train.docs[ep_r].size() / N_batch;
         for (int k = k_s; k < k_e; ++k) {
-            const auto &cwk_k = b_train.cwk[ep_r].row(k);
+            auto cwk_k = b_train.cwk.row(ep_r * N_topics + k);
             double ck_k = b_train.ck(ep_r, k);
-            for (int w_r = 0; w_r < c_train.vocab_e - c_train.vocab_s - 1; ++w_r) {
-                double post = K_post * (cwk_k[w_r] - ck_k * localPhiSoftmax[ep_r](k, w_r));
+
+            // Calc g_post
+            for (int w_r = 0; w_r < N_local_vocab - 1; ++w_r)
+                post[w_r] = -K_post * ck_k * localPhiSoftmax[ep_r](k, w_r);
+
+            for (const auto &tok: cwk_k)
+                post[tok.k] += K_post * tok.v;
+
+            // g_prior and SGLD update
+            for (int w_r = 0; w_r < N_local_vocab - 1; ++w_r) {
                 double prior = 0;
                 prior += (0 == ep_g) ?
                          (-phi(k, w_r) / sqr(FLAGS_sig_phi0)) :
@@ -484,7 +494,7 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
                 prior += (pRowId + 1 == nProcRows && ep_g + 1 == c_train.ep_e) ?
                          0 :
                          ((phiTp1(k, w_r) - phi(k, w_r)) / sqr(FLAGS_sig_phi));
-                double grad = prior + post;
+                double grad = prior + post[w_r];
                 if (FLAGS_psgld) {
                     phiAux(k, w_r) = FLAGS_psgld_a * phiAux(k, w_r) + (1 - FLAGS_psgld_a) * grad * grad;
                     double g = 1. / (FLAGS_psgld_l + sqrt(phiAux(k, w_r)));
@@ -511,8 +521,7 @@ void pDTM::BatchState::InitZ() {
     }
 
     Clock clk; clk.tic(); // FIXME
-    // Reset cwk (cdk is cleared in sync())
-    for (auto &a: cwk) a *= 0;
+    // Reset ck (cwk, cdk is cleared in sync())
     ck *= 0;
     dense_cwk_overhead = clk.toc();
 
@@ -534,17 +543,17 @@ void pDTM::BatchState::UpdateZ() {
     for (int _ = 0; _ < FLAGS_n_threads; ++_)
         UpdateZ_th(_, FLAGS_n_threads);
 
-    // TODO: if DCMSparse permitting, we can sync after the last iteration when testing.
     cdk.sync();
+    cwk.sync();
 
-    // FIXME: THIS IS SLOW. and zeroing out cwk is slow since it's sparse. use link lists with locks.
+    // Allreduce ck
     Clock clk; clk.tic(); // FIXME
     Arr ck_ro = ZEROS_LIKE(ck);
     for (int e = 0; e < ck.rows(); ++e) {
 #pragma omp parallel for schedule(static)
-        for (int t = 0; t < ck.cols(); ++t)
-            for (int w = 0; w < cwk[e].cols(); ++w)
-                ck_ro(e, t) += cwk[e](t, w);
+        for (int t = 0; t < ck.cols(); ++t) {
+            ck_ro(e, t) = cva_row_sum(cwk.row(e * N_topics + t));
+        }
     }
     MPI_Allreduce(ck_ro.data(), ck.data(), (int)ck.size(), MPI_DOUBLE, MPI_SUM, p.commRow);
     PRF(LOG(INFO) << "Gathering ck took " << clk.toc() + dense_cwk_overhead;); // FIXME
@@ -594,17 +603,18 @@ void pDTM::BatchState::UpdateZ_th(int thId, int nTh) {
                     }
                 }
                 cdk.update(thId, (int)batch_id, z0);
-                cwk[ep](z0, w_rel) += 1.;
+                cwk.update(thId, ep * N_topics + z0, w_rel);
+//                cwk[ep](z0, w_rel) += 1.;
             }
         }
     }
 }
 
 inline Arr logsumexp(const Arr &src) {
-	Arr log_src = src;
-	Eigen::ArrayXd maxC = log_src.rowwise().maxCoeff();
-	log_src.colwise() -= maxC;
-	return Eigen::log(Eigen::exp(log_src).rowwise().sum()) + maxC;
+    Arr log_src = src;
+    Eigen::ArrayXd maxC = log_src.rowwise().maxCoeff();
+    log_src.colwise() -= maxC;
+    return Eigen::log(Eigen::exp(log_src).rowwise().sum()) + maxC;
 }
 
 void pDTM::EstimateLL() {
@@ -636,7 +646,7 @@ void pDTM::EstimateLL() {
     LOG(INFO) << "EstimateLL: burn-in took " << ck.toc() << " / " << FLAGS_n_infer_burn_in;
 
     // Draw samples and estimate
-    // FIXME: This is not affordable for large datasets. Split document in estimation instead.
+    // TODO: This is not affordable for large datasets. Split document in estimation instead.
     Arr meanEtaSftmax = ZEROS_LIKE(b_test.localEta);
     vector<double> eta_softmax_th[MAX_THREADS];
 
