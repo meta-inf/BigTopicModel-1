@@ -3,7 +3,7 @@ project(btm_dtm)
 
 set(CMAKE_C_COMPILER mpicc)
 set(CMAKE_CXX_COMPILER mpic++)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -march=native \
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 \
 -pthread -fopenmp  \
 -DHAVE_SSE2 -DDSFMT_MEXP=19937")
 
@@ -28,10 +28,7 @@ set(SOURCE_FILES dSFMT/dSFMT.cpp
     lcorpus.cpp
     lcorpus.h
     random.h aliastable.h
-    utils.h pdtm.cpp pdtm.h mpi_circular.h)
+    utils.h pdtm.cpp pdtm.h)
 
 add_executable(btm_dtm ${SOURCE_FILES})
 target_link_libraries(btm_dtm ${MPI_CXX_LIBRARIES} ${GLOG} ${GFLAGS})
-
-add_executable(dtm_fmt dtm_formatter.cpp)
-target_link_libraries(dtm_fmt ${GLOG} ${GFLAGS})
