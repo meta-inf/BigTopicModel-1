@@ -187,7 +187,7 @@ private:
                 vector<Entry>().swap(wbuff_thread[tid]);
             }
             Sort::RadixSort(wbuff_sorted.data(), total_size, key_digits + value_digits);
-            if (process_id == 0)
+            if (process_id == monitor_id)
                 LOG(INFO) << "Bucket sort took " << clk.toc() << std::endl;
 
 #define get_value(x) ((x)&value_mask)
@@ -238,7 +238,7 @@ private:
             for (auto &buff: wbuff_thread)
                 buff.clear();
             vector<long long>().swap(wbuff_sorted);
-            if (process_id == 0)
+            if (process_id == monitor_id)
                 LOG(INFO) << "Count took " << clk.toc() << std::endl;
         }
     }
@@ -343,7 +343,7 @@ private:
         // Gather
         buff.Allgather(intra_partition, copy_size, merged);
         size_t totalAllgatherSize = buff.size();
-        if (process_id == 0)
+        if (process_id == monitor_id)
             LOG(INFO) << "Allgather Communicated " << (double) totalAllgatherSize / 1048576 <<
             " MB. Alltoall communicated " << alltoall_size / 1048576 << " MB." << std::endl;
         //       cout << "Allgather takes " << clk.toc() << endl; clk.tic();
