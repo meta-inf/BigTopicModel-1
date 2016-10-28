@@ -3,11 +3,10 @@
 //
 
 #include "pdtm.h"
-#include "mpi_circular.h"
 
 using namespace std;
 
-DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   // TODO
+DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   
 DEFINE_bool(show_topics, false, "Display top K words in each topic");
 DEFINE_int32(show_topics_K, 10, "Display top K words in each topic");
 DEFINE_int32(n_sgld_phi, 2, "number of sgld iterations for phi");
@@ -15,28 +14,28 @@ DEFINE_int32(n_sgld_eta, 4, "number of sgld iterations for eta");
 DEFINE_int32(n_mh_steps, 16, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_mh_thin, 1, "number of burn-in mh iterations for Z");
 DEFINE_int32(n_infer_burn_in, 16, "number of burn-in steps in test");
-DEFINE_int32(n_infer_samples, 1, "number of samples used in test");
+DEFINE_int32(n_infer_samples, 24, "number of samples used in test");
 DEFINE_int32(n_threads, 2, "number of threads used");
 DEFINE_int32(n_topics, 50, "number of topics");
 DEFINE_int32(n_doc_batch, 60, "implemented");
 DEFINE_bool(psgld, true, "pSGLD with RMSProp for Phi");
 DEFINE_double(psgld_a, 0.95, "alpha in RMSProp");
 DEFINE_double(psgld_l, 1e-4, "lambda in pSGLD");
-DEFINE_bool(fix_alpha, false, "Use fixed symmetrical topic prior");    // TODO
-DEFINE_double(sgld_phi_a, 0.5, "SGLD learning rate parameter for Phi");
+DEFINE_double(sgld_phi_a, 20, "SGLD learning rate parameter for Phi");
 DEFINE_double(sgld_phi_b, 100, "SGLD learning rate parameter for Phi");
-DEFINE_double(sgld_phi_c, 0.8, "SGLD learning rate parameter for Phi");
+DEFINE_double(sgld_phi_c, 0.51, "SGLD learning rate parameter for Phi");
 DEFINE_double(sgld_eta_a, 0.5, "SGLD learning rate parameter for Eta");
 DEFINE_double(sgld_eta_b, 100, "SGLD learning rate parameter for Eta");
 DEFINE_double(sgld_eta_c, 0.8, "SGLD learning rate parameter for Eta");
 DEFINE_double(sig_al, 0.6, "stddev for P(alpha_t|alpha_{tm1})");
 DEFINE_double(sig_al0, 0.1, "stddev of Gaussian prior for alpha_0");
 DEFINE_double(sig_phi, 0.2, "... for phi_t|phi_{tm1}");
-DEFINE_double(sig_phi0, 10, "... for phi_0");
-DEFINE_double(sig_eta, 4, "... for P(eta_{td}|alpha_t)");
+DEFINE_double(sig_phi0, 8, "... for phi_0");
+DEFINE_double(sig_eta, 6, "... for P(eta_{td}|alpha_t)");
 DEFINE_int32(report_every, 1, "Time in iterations between two consecutive reports");
 DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
 
+DEFINE_int32(dcm_monitor_id, -1, "Monitor process for DCM. -1 - off");
 DEFINE_bool(_profile, false, "Show profiling output");
 DEFINE_bool(_loadphi, false, "Import parameter in Blei dtm's format; for single machine only");
 DEFINE_string(_loadphi_fmt, "/home/if/recycle_shift/dtm/dtm/dat/drun50/lda-seq/topic-%03d-TEP29-var-e-log-prob.dat", "");
@@ -47,9 +46,10 @@ DECLARE_string(dump_prefix);
 #define ZEROS_LIKE(a) Arr::Zero(a.rows(), a.cols())
 #define PRF(stmt) do { if (FLAGS__profile) { stmt } } while (0)
 
-pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
+PDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, PDTM &p_):
     p(p_), corpus(corpus_),
-    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads),
+    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, 
+            p.procId, FLAGS_n_threads, LocalMergeStyle::separate, FLAGS_dcm_monitor_id),
     cwk((int)corpus_.docs.size() * p.N_topics, corpus_.vocab_e - corpus_.vocab_s, FLAGS_n_threads)
 {
     N_glob_vocab = p.N_glob_vocab; // Having problem putting them in the initializer list
@@ -62,7 +62,7 @@ pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     localEta = Arr::Zero(n_max_batch, p.N_topics);
 }
 
-pDTM::pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
+PDTM::PDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
            int N_vocab_, int procId_, int nProcRows_, int nProcCols_) :
     procId(procId_), nProcRows(nProcRows_), nProcCols(nProcCols_),
     N_glob_vocab(N_vocab_), N_topics(FLAGS_n_topics), N_batch(FLAGS_n_doc_batch),
@@ -198,7 +198,7 @@ inline void divide_interval(T s, T e, int k, int n, T &ls, T &le) {
 //   They are clamped to zero as we're using reduced-normal and not updated.
 
 // Reduce normalizer and set-up localPhi{Normalized, Softmax, Z} from localPhi.
-void pDTM::_SyncPhi() {
+void PDTM::_SyncPhi() {
     Arr phi_exp_sum = Arr::Zero(localPhi.size(), N_topics);
     for (int i = 0; i < (int)localPhi.size(); ++i) {
 #pragma omp parallel for schedule(static)
@@ -229,13 +229,15 @@ void pDTM::_SyncPhi() {
     }
 }
 
-void pDTM::IterInit(int iter) {
+void PDTM::IterInit(int iter) {
     _SyncPhi();
 
     // {{{ Exchange PhiTm1, PhiTp1
-    Circular<double>(localPhi[0].data(), localPhi.back().data(), phiTm1.data(), phiTp1.data(), eig_size(localPhi[0]), pRowId,
-                     (pRowId == 0 ? -1 : procId - nProcCols), (pRowId + 1 == nProcRows ? -1 : procId + nProcCols),
-                     iter * 4);
+    MPIHelpers::CircularBlock<double>(
+            localPhi[0].data(), localPhi.back().data(), phiTm1.data(), phiTp1.data(), eig_size(localPhi[0]), 
+            pRowId == 0 ? -1 : procId - nProcCols, 
+            pRowId + 1 == nProcRows ? -1 : procId + nProcCols,
+            iter * 4);
     // }}}
 
     // {{{ Sample batches
@@ -277,14 +279,14 @@ void pDTM::IterInit(int iter) {
 
 // UpdateZ and updateEta won't change persistent state (sample points etc.)
 
-void pDTM::BatchState::UpdateEta(int n_iter) {
+void PDTM::BatchState::UpdateEta(int n_iter) {
 #pragma omp parallel for schedule(static, 1)
     for (int _ = 0; _ < FLAGS_n_threads; ++_) {
         UpdateEta_th(n_iter, _, FLAGS_n_threads);
     }
 }
 
-void pDTM::Infer() {
+void PDTM::Infer() {
     double sum_test_time = 0;
     for (int iter = 0; iter < FLAGS_n_iters; ++iter) {
         IterInit(iter);
@@ -333,16 +335,18 @@ void pDTM::Infer() {
     LOG(INFO) << "Test time overhead = " << sum_test_time;
 }
 
-void pDTM::UpdateAlpha(int n_iter)
+void PDTM::UpdateAlpha(int n_iter)
 {
     // Request alphaT{pm}1
     double *alpha_tm1 = alpha.data();
     const double *alpha_first = alpha.data() + N_topics;
     const double *alpha_last = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s);
     double *alpha_tp1 = alpha.data() + N_topics * (c_train.ep_e - c_train.ep_s + 1);
-    Circular<double>(alpha_first, alpha_last, alpha_tm1, alpha_tp1, N_topics, pRowId,
-                     (pRowId == 0 ? -1 : procId - nProcCols), (pRowId + 1 == nProcRows ? -1 : procId + nProcCols),
-                     n_iter * 4 + 2);
+    MPIHelpers::CircularBlock<double>(
+            alpha_first, alpha_last, alpha_tm1, alpha_tp1, N_topics, 
+            pRowId == 0 ? -1 : procId - nProcCols, 
+            pRowId + 1 == nProcRows ? -1 : procId + nProcCols,
+            n_iter * 4 + 2);
 
     NormalDistribution normal;
     for (int ep = 0, ep_le = c_train.ep_e - c_train.ep_s; ep < ep_le; ++ep) {
@@ -383,7 +387,7 @@ void pDTM::UpdateAlpha(int n_iter)
 
 // Sample Eta|MB.
 // Each thread samples for a subset of documents.
-void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
+void PDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     // Init thread-local storage
     static vector<double> eta_softmax_[MAX_THREADS];
     if (eta_softmax_[kTh].size() < N_topics) {
@@ -429,7 +433,7 @@ void pDTM::BatchState::UpdateEta_th(int n_iter, int kTh, int nTh) {
     }
 }
 
-void pDTM::UpdatePhi(int n_iter) {
+void PDTM::UpdatePhi(int n_iter) {
     // Set localPhiBak.
 #pragma omp parallel for schedule(static)
     for (size_t e = 0; e < localPhi.size(); ++e)
@@ -450,7 +454,7 @@ void pDTM::UpdatePhi(int n_iter) {
 }
 
 // Thread worker for UpdatePhi. Requires localPhiBak and localPhiSoftmax to be set.
-void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
+void PDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     // Get vocab subset to sample
     int k_s, k_e;
     divide_interval(0, N_topics, kTh, nTh, k_s, k_e);
@@ -509,7 +513,7 @@ void pDTM::UpdatePhi_th(int phi_iter, int kTh, int nTh) {
     }
 }
 
-void pDTM::BatchState::InitZ() {
+void PDTM::BatchState::InitZ() {
     if (altWord.empty()) {
         // First entrance. Allocate stuff.
         altWord.resize(size_t(corpus.ep_e - corpus.ep_s));
@@ -536,7 +540,7 @@ void pDTM::BatchState::InitZ() {
     }
 }
 
-void pDTM::BatchState::UpdateZ() {
+void PDTM::BatchState::UpdateZ() {
     InitZ();
 
 #pragma omp parallel for schedule(static, 1)
@@ -561,7 +565,7 @@ void pDTM::BatchState::UpdateZ() {
 }
 
 // Sample Z|MB.
-void pDTM::BatchState::UpdateZ_th(int thId, int nTh) {
+void PDTM::BatchState::UpdateZ_th(int thId, int nTh) {
     // Divide docs
     size_t th_batch_s, th_batch_e;
     divide_interval((size_t)0, batch.size(), thId, nTh, th_batch_s, th_batch_e);
@@ -617,7 +621,7 @@ inline Arr logsumexp(const Arr &src) {
     return Eigen::log(Eigen::exp(log_src).rowwise().sum()) + maxC;
 }
 
-void pDTM::EstimateLL() {
+void PDTM::EstimateLL() {
     Clock ck; ck.tic(); // FIXME
     // Init b_test
     b_test.localEta *= 0;
@@ -704,7 +708,7 @@ void pDTM::EstimateLL() {
 }
 
 // Assume logPhiNormalized is up to date
-void pDTM::DumpParams() {
+void PDTM::DumpParams() {
     string path = FLAGS_dump_prefix + "-" + to_string(pRowId) + "_" + to_string(pColId);
 
     // {{{ Phi
@@ -734,7 +738,7 @@ void pDTM::DumpParams() {
     // }}}
 }
 
-void pDTM::ShowTopics(int iter) {
+void PDTM::ShowTopics(int iter) {
     int K = FLAGS_show_topics_K;
     for (int ep = 0; ep < c_train.ep_e - c_train.ep_s; ++ep) {
         int g_ep = ep + c_train.ep_s;

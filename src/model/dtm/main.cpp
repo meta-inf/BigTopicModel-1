@@ -39,7 +39,7 @@ int main (int argc, char *argv[]) {
 
     omp_set_num_threads(FLAGS_n_threads);
 
-    pDTM dtm(LocalCorpus(corp_train), LocalCorpus(corp_theld), LocalCorpus(corp_tobsv), Dict(dict),
+    PDTM dtm(LocalCorpus(corp_train), LocalCorpus(corp_theld), LocalCorpus(corp_tobsv), Dict(dict),
              FLAGS_n_vocab, proc_id, FLAGS_proc_rows, FLAGS_proc_cols);
 	dtm.Infer();
 

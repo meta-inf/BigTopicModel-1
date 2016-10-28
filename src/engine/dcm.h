@@ -28,7 +28,19 @@ using std::vector;
  */
 // TODO: row sum should be size_t
 class DCMSparse {
-protected:
+public:
+    struct Row {
+        SpEntry *_begin, *_end;
+
+        SpEntry *begin() { return _begin; }
+
+        SpEntry *end() { return _end; }
+
+        size_t size() { return _end - _begin; }
+
+        SpEntry &operator[](const size_t index) { return _begin[index]; }
+    };
+private:
     /**
      * \var
      * process_size    :   the number of process in MPI_COMM_WORLD
@@ -68,10 +80,32 @@ protected:
      */
     TCoord row_size, column_size;
     int thread_size;
+    TId monitor_id;
 
+    double local_merge_time_total, global_merge_time_total;
+
+    /*!
+     * TODO : normally, I should declare mono_tails within a std::deque, just like this
+     * std::deque<atomic<uintptr_t > > mono_tails;
+     * but there is a compiler bug
+     * {
+     * /usr/include/c++/5/bits/stl_uninitialized.h(557):
+     * internal error: assertion failed at: "shared/cfe/edgcpfe/types.c", line 2359
+     * std::__uninitialized_default_1<__is_trivial(_ValueType)
+     * }
+     * official response can be found here : https://software.intel.com/en-us/forums/intel-c-compiler/topic/685388
+     * currently the mono_tail is dynamically allocated
+     */
+    // use by monolith local_merge_style
+    vector<uintptr_t> mono_heads;
+    atomic<uintptr_t> *mono_tails;
+    vector<TTopic> mono_buff;
+    // use by separate local_merge_style
     vector<vector<Entry>> wbuff_thread;
     vector<long long> wbuff_sorted;
     vector<size_t> last_wbuff_thread_size;
+    LocalMergeStyle local_merge_style;
+
     CVA<SpEntry> buff, merged;
     vector<size_t> row_sum;
     vector<size_t> row_sum_read;
@@ -84,115 +118,129 @@ protected:
     vector<SpEntry> recv_buff;
     vector<size_t> recv_offsets_buff;
 
+    vector<size_t> row_offset_global;
+    vector<SpEntry> data_global;
+
     //T rtest, wtest;
     void localMerge() {
-        Clock clk;
-        clk.tic();
-        // Bucket sort each thread
-        int key_digits = 0;
-        while ((1 << key_digits) < row_size) key_digits++;
-        int value_digits = 0;
-        while ((1 << value_digits) < column_size) value_digits++;
-        long long value_mask = (1LL << value_digits) - 1;
+        //LOG_IF(INFO, process_id == monitor_id) << "local_merge_style " << local_merge_style;
+        if (monolith == local_merge_style) {
+            //LOG_IF(INFO, process_id == monitor_id) << "merge by mono " << local_merge_style;
+            // reset mono_tails
+            for (uintptr_t i = 0; i < mono_heads.size(); ++i)
+                mono_tails[i] = mono_heads[i];
+#pragma omp parallel for
+            for (TIndex r = 0; r < row_size; r++) {
+                sort(mono_buff.begin() + mono_heads[r], mono_buff.begin() + mono_heads[r + 1]);
+                int last = -1, Kd = 0;
+                for (size_t i = mono_heads[r]; i < mono_heads[r + 1]; i++) {
+                    TTopic value = mono_buff[i];
+                    Kd += last != value;
+                    last = value;
+                }
+                buff.SetSize(r, Kd);
+                /*
+                if (process_id == 0)
+                    LOG(INFO) << r << " : " << Kd;
+                    */
+            }
+            buff.Init();
+#pragma omp parallel for
+            for (TIndex r = 0; r < row_size; r++) {
+                int last = -1, Kd = 0;
+                auto row = buff.Get(r);
+                for (size_t i = mono_heads[r]; i < mono_heads[r + 1]; i++) {
+                    TTopic value = mono_buff[i];
+                    if (last != value)
+                        row[Kd++] = SpEntry{value, 1};
+                    else
+                        row[Kd - 1].v++;
+                    last = value;
+                }
+            }
+        } else {
+            //LOG_IF(INFO, process_id == monitor_id) << "merge by wbuff_thread " << local_merge_style;
+            Clock clk;
+            clk.tic();
+            // Bucket sort each thread
+            int key_digits = 0;
+            while ((1 << key_digits) < row_size) key_digits++;
+            int value_digits = 0;
+            while ((1 << value_digits) < column_size) value_digits++;
+            long long value_mask = (1LL << value_digits) - 1;
 
-        size_t total_size = 0;
-        for (auto &t: wbuff_thread) total_size += t.size();
-        wbuff_sorted.resize(total_size);
-        total_size = 0;
-        /// Prepare wbuff_o for radix sort
-        for (int tid = 0; tid < thread_size; tid++) {
-            auto *wbuff_i = wbuff_thread[tid].data();
-            auto *wbuff_o = wbuff_sorted.data() + total_size;
-            size_t size = wbuff_thread[tid].size();
-            total_size += size;
+            size_t total_size = 0;
+            for (auto &t: wbuff_thread) total_size += t.size();
+            wbuff_sorted.resize(total_size);
+            size_t wbuff_o_offset = 0;
+            /// Prepare wbuff_o for radix sort
+            for (int tid = 0; tid < thread_size; tid++) {
+                auto *wbuff_i = wbuff_thread[tid].data();
+                auto *wbuff_o = wbuff_sorted.data() + wbuff_o_offset;
+                size_t size = wbuff_thread[tid].size();
+                wbuff_o_offset += size;
 
-            for (size_t i = 0; i < size; i++)
-                wbuff_o[i] = (((long long) wbuff_i[i].r) << value_digits) + wbuff_i[i].c;
+                for (size_t i = 0; i < size; i++)
+                    wbuff_o[i] = (((long long) wbuff_i[i].r) << value_digits) + wbuff_i[i].c;
 
-            last_wbuff_thread_size[tid] = size;
-            vector<Entry>().swap(wbuff_thread[tid]);
-        }
-        Sort::RadixSort(wbuff_sorted.data(), total_size, key_digits + value_digits);
-        if (process_id == 0)
-            std::cout << "Bucket sort took " << clk.toc() << std::endl;
+                last_wbuff_thread_size[tid] = size;
+                vector<Entry>().swap(wbuff_thread[tid]);
+            }
+            Sort::RadixSort(wbuff_sorted.data(), total_size, key_digits + value_digits);
+            if (process_id == monitor_id)
+                LOG(INFO) << "Bucket sort took " << clk.toc() << std::endl;
 
 #define get_value(x) ((x)&value_mask)
 #define get_key(x) ((x)>>value_digits)
 
-        clk.tic();
-        TSize omp_thread_size = omp_get_max_threads();
-        size_t interval = row_size / omp_thread_size;
-        std::vector<size_t> offsets(row_size + 1);
+            clk.tic();
+            TSize omp_thread_size = omp_get_max_threads();
+            size_t interval = row_size / omp_thread_size;
+            std::vector<size_t> offsets(row_size + 1);
 #pragma omp parallel for
-        for (TId tid = 0; tid < omp_thread_size; tid++) {
-            size_t begin = interval * tid;
-            size_t end = tid + 1 == omp_thread_size ? row_size : interval * (tid + 1);
-            // TODO replace it with std::lower_bound
-            // Find first p such that key(wbuff_sorted[p]) >= begin
-            size_t l_pos = 0;
-            size_t count = total_size;
-            while (count > 0) {
-                size_t count2 = count / 2;
-                size_t mid_pos = l_pos + count2;
-                int mid_key = get_key(wbuff_sorted[mid_pos]);
-                if (mid_key < begin) {
-                    l_pos = mid_pos + 1;
-                    count -= count2 + 1;
+            for (TId tid = 0; tid < omp_thread_size; tid++) {
+                size_t begin = interval * tid;
+                size_t end = tid + 1 == omp_thread_size ? row_size : interval * (tid + 1);
+                size_t current_pos = lower_bound(wbuff_sorted.begin(), wbuff_sorted.end(), begin << value_digits)
+                                     - wbuff_sorted.begin();
+                for (int r = begin; r < end; r++) {
+                    size_t next_pos = offsets[r] = current_pos;
+                    int last = -1, Kd = 0;
+                    while (next_pos < total_size && get_key(wbuff_sorted[next_pos]) == r) {
+                        int value = get_value(wbuff_sorted[next_pos]);
+                        Kd += last != value;
+                        last = value;
+                        next_pos++;
+                    }
+                    current_pos = next_pos;
+                    buff.SetSize(r, Kd);
                 }
-                else
-                    count = count2;
             }
-
-            // TODO this iteration walk through all wbfff_sorted, maybe it is not necessory
-            size_t current_pos = l_pos;
-            for (int r = begin; r < end; r++) {
-                offsets[r] = current_pos;
-                size_t next_pos = current_pos;
-                while (next_pos < total_size &&
-                       get_key(wbuff_sorted[next_pos]) == r)
-                    next_pos++;
-                current_pos = next_pos;
-            }
-        }
-        offsets.back() = total_size;
+            offsets.back() = total_size;
+            buff.Init();
 
 #pragma omp parallel for
-        for (TIndex r = 0; r < row_size; r++) {
-            int last = -1;
-            int Kd = 0;
-            for (size_t i = offsets[r]; i < offsets[r + 1]; i++) {
-                int value = get_value(wbuff_sorted[i]);
-                Kd += last != value;
-                last = value;
+            for (TIndex r = 0; r < row_size; r++) {
+                int last = -1;
+                int Kd = 0;
+                int count = 0;
+                auto row = buff.Get(r);
+                for (size_t i = offsets[r]; i < offsets[r + 1]; i++) {
+                    int value = get_value(wbuff_sorted[i]);
+                    if (last != value) {
+                        row[Kd++] = SpEntry{value, 1};
+                    } else
+                        row[Kd - 1].v++;
+                    last = value;
+                }
             }
-            buff.SetSize(r, Kd);
+
+            for (auto &buff: wbuff_thread)
+                buff.clear();
+            vector<long long>().swap(wbuff_sorted);
+            if (process_id == monitor_id)
+                LOG(INFO) << "Count took " << clk.toc() << std::endl;
         }
-        buff.Init();
-#pragma omp parallel for
-        for (TIndex r = 0; r < row_size; r++) {
-            int last = -1;
-            int Kd = 0;
-            int count = 0;
-            auto row = buff.Get(r);
-            for (size_t i = offsets[r]; i < offsets[r + 1]; i++) {
-                int value = get_value(wbuff_sorted[i]);
-                if (last != value) {
-                    row[Kd++] = SpEntry{value, 1};
-                } else
-                    row[Kd - 1].v++;
-                last = value;
-            }
-        }
-        for (auto &buff: wbuff_thread)
-            buff.clear();
-        vector<long long>().swap(wbuff_sorted);
-        if (process_id == 0)
-            std::cout << "Count took " << clk.toc() << std::endl;
-//        auto row = buff.Get(0);
-//        for (auto entry: row)
-//            cout << entry.k << ':' << entry.v << ' ';
-//        cout << endl;
-//        exit(0);
     }
 
     void globalMerge() {
@@ -286,7 +334,7 @@ protected:
 
             // Sort
             //std::sort(b.begin(), b.end(),
-            //		[](const SpEntry &a, const SpEntry &b) { return a.v > b.v; });
+            //        [](const SpEntry &a, const SpEntry &b) { return a.v > b.v; });
         }
         //       cout << "Count2 takes " << clk.toc() << endl; clk.tic();
         decltype(recv_buff)().swap(recv_buff);
@@ -295,8 +343,8 @@ protected:
         // Gather
         buff.Allgather(intra_partition, copy_size, merged);
         size_t totalAllgatherSize = buff.size();
-        if (process_id == 0)
-            std::cout << "Allgather Communicated " << (double) totalAllgatherSize / 1048576 <<
+        if (process_id == monitor_id)
+            LOG(INFO) << "Allgather Communicated " << (double) totalAllgatherSize / 1048576 <<
             " MB. Alltoall communicated " << alltoall_size / 1048576 << " MB." << std::endl;
         //       cout << "Allgather takes " << clk.toc() << endl; clk.tic();
         decltype(recv_buff)().swap(recv_buff);
@@ -306,22 +354,24 @@ public:
 // Thread
     DCMSparse(const int partition_size, const int copy_size, const int row_size, const int column_size,
               PartitionType partition_type, const int process_size, const int process_id,
-              const int thread_size) :
+              const int thread_size, LocalMergeStyle local_merge_style, TId monitor_id) :
             partition_size(partition_size), copy_size(copy_size), row_size(row_size), column_size(column_size),
             partition_type(partition_type), process_size(process_size), process_id(process_id),
-            thread_size(thread_size), buff(row_size), merged(row_size) {
+            thread_size(thread_size), buff(row_size), merged(row_size), local_merge_style(local_merge_style),
+            monitor_id(monitor_id) {
         // TODO : max token number of each document
-        if (process_size != 1) {
-            assert(process_size == partition_size * copy_size);
-            if (column_partition == partition_type) {
-                partition_id = process_id % partition_size;
-                copy_id = process_id / partition_size;
-            } else if (row_partition == partition_type) {
-                partition_id = process_id / copy_size;
-                copy_id = process_id % copy_size;
-            }
+        assert(process_size == partition_size * copy_size);
+        if (column_partition == partition_type) {
+            partition_id = process_id % partition_size;
+            copy_id = process_id / partition_size;
+        } else if (row_partition == partition_type) {
+            partition_id = process_id / copy_size;
+            copy_id = process_id % copy_size;
+        }
+        if (process_size > 1) {
             MPI_Comm_split(MPI_COMM_WORLD, partition_id, process_id, &intra_partition);
             MPI_Comm_split(MPI_COMM_WORLD, copy_id, process_id, &inter_partition);
+        }
         /*
         printf("pid : %d - partition_size : %d, copy_size : %d, row_size : %d, column_size : %d, process_size : %d, thread_size : %d\n",
                process_id, partition_size, copy_size, row_size, column_size, process_size, thread_size);
@@ -334,21 +384,42 @@ public:
         wbuff_sorted.resize(thread_size);
         row_sum.resize(column_size);
         row_sum_read.resize(column_size);
+        local_merge_time_total = 0;
+        global_merge_time_total = 0;
 
-        /*
-         *            documents words   tokens      token per doc
-         * nips     : 1422      12375   1828206     1285
-         * nytimes  : 293793    101635  96904469    329
-         * pubmed   : 8118463   141043  730529615   90
+        /*!
+         *            documents words   tokens      token per doc   token per word
+         * nips     : 1422      12375   1828206     1285            148
+         * nytimes  : 293793    101635  96904469    329             953
+         * pubmed   : 8118463   141043  730529615   90              5179
          */
+    }
+
+    void set_mono_buff(vector<size_t>& sizes) {
+        /// Initialize the mono_heads, mono_tails and mono_buff
+        mono_heads.resize(sizes.size() + 1);
+        partial_sum(sizes.begin(), sizes.end(), mono_heads.begin() + 1);
+        mono_heads[0] = 0;
+        mono_tails = (std::atomic_uintptr_t *)
+                _mm_malloc(mono_heads.size() * sizeof(std::atomic_uintptr_t), ALIGN_SIZE);
+        for (uintptr_t i = 0; i < mono_heads.size(); ++i)
+            mono_tails[i] = mono_heads[i];
+        mono_buff.resize(mono_heads.back());
+    }
+
+    void free_mono_buff() {
+        _mm_free(mono_tails);
     }
 
     auto row(const int local_row_idx) -> decltype(buff.Get(0)) {
         return buff.Get(local_row_idx);
     }
 
-    void update(const int tid, const int local_row_idx, const int key) {
-        wbuff_thread[tid].push_back(Entry{local_row_idx, key});
+    void update(const unsigned int tid, const unsigned int local_row_idx, const unsigned int key) {
+        if (monolith == local_merge_style)
+            mono_buff[mono_tails[local_row_idx]++] = key;
+        else
+            wbuff_thread[tid].push_back(Entry{local_row_idx, key});
     }
 
     size_t *rowMarginal() {
@@ -365,26 +436,32 @@ public:
         for (auto &count: local_row_sum_s)
             for (int c = 0; c < column_size; c++)
                 row_sum_read[c] += count[c];
+        // TODO : note that here we use the original MPI_Allreduce,
+        // using BigMPI MPI_Allreduce instead
         MPI_Allreduce(row_sum_read.data(), row_sum.data(), column_size,
                       MPI_UNSIGNED_LONG_LONG, MPI_SUM, inter_partition);
         return row_sum.data();
     }
 
     void sync() {
-        // merge inside single node
+        /*
+        for (int i = 0; i < mono_heads.size() - 1; ++i) {
+            LOG_IF(ERROR, mono_tails[i] != mono_heads[i + 1])
+            << "i : " << i << " head " << mono_heads[i + 1] << " tail " << mono_tails[i];
+        }
+         */
         Clock clk;
+        // merge inside single node
         clk.tic();
         localMerge();
-        if (process_id == 0)
-            std::cout << "Local merge took " << clk.toc() << std::endl;
+        LOG_IF(INFO, process_id == monitor_id) << "Local merge took " << clk.toc() << std::endl;
+        local_merge_time_total += clk.toc();
 
         if (process_size > 1) {
-            //printf("pid : %d - local merge done\n", process_id);
-            // merge DCMSparse among the intra-partition
             clk.tic();
             globalMerge();
-            if (process_id == 0)
-                std::cout << "Global merge took " << clk.toc() << std::endl;
+            LOG_IF(INFO, process_id == monitor_id) << "Global merge took " << clk.toc() << std::endl;
+            global_merge_time_total += clk.toc();
         }
 
         for (int tid = 0; tid < thread_size; tid++)
@@ -394,12 +471,95 @@ public:
             //printf("pid : %d - global merge done\n", process_id);
             size_t wbuff_thread_size = 0;
             for (auto &v: wbuff_thread) wbuff_thread_size += v.capacity();
-            if (process_id == 0) {
-                printf("wbuff_thread %llu, buff %llu, merged %llu, recv_buff %llu\n",
-                       wbuff_thread_size * sizeof(Entry) / 1048576, buff.size() / 1048576,
-                       merged.size() / 1048576, recv_buff.capacity() * sizeof(SpEntry) / 1048576);
+            LOG_IF(INFO, process_id == monitor_id) << "wbuff_thread " << wbuff_thread_size * sizeof(Entry)
+                << ", buff " << buff.size()
+                << ", merged " << merged.size()
+                << ", recv_buff " << recv_buff.capacity() * sizeof(SpEntry)
+                << std::endl;
+        }
+    }
+
+    // gather cdk/cwk from all nodes, do this for MedLDA
+    void aggrGlobal() {
+        /*!
+         * In following code, row number is a scalar, indicate how many rows there.
+         * row size is a vector, indicate the size of each row.
+         */
+        int inter_partition_size, inter_partition_id;
+        MPI_Comm_size(inter_partition, &inter_partition_size);
+        MPI_Comm_rank(inter_partition, &inter_partition_id);
+        LOG_IF(INFO, process_id == monitor_id) << "process_id : " << process_id  << " inter partition size : " << inter_partition_size
+                    << " inter partition id : " << inter_partition_id;
+
+        // gather data size from buff.offsets[buff.R]
+        vector<int> data_size_array, data_size_offset;
+        data_size_array.resize(inter_partition_size);
+        data_size_offset.resize(inter_partition_size + 1);
+        int buff_offsets = (int)buff.offsets[buff.R];
+        MPI_Allgather(&buff_offsets, 1, MPI_INT,
+                      data_size_array.data(), 1, MPI_INT, inter_partition);
+        transform(data_size_array.begin(), data_size_array.end(), data_size_array.begin(),
+                  [](size_t it) {return it * sizeof(SpEntry);});
+        data_size_offset[0] = 0;
+        partial_sum(data_size_array.begin(), data_size_array.end(), data_size_offset.begin() + 1);
+
+        // gather buff data by buff offsets
+        data_global.resize(data_size_offset.back() / sizeof(SpEntry));
+        MPI_Allgatherv(buff.data, buff_offsets * sizeof(SpEntry), MPI_CHAR,
+                       data_global.data(), data_size_array.data(), data_size_offset.data(), MPI_CHAR, inter_partition);
+        transform(data_size_offset.begin(), data_size_offset.end(), data_size_offset.begin(),
+                  [](size_t it) {return it / sizeof(SpEntry);});
+        LOG_IF(INFO, process_id == monitor_id) << "data_size_offset.back() : " << data_size_offset.back();
+
+        // gather row number
+        vector<int> row_number_array, row_number_offset;
+        row_number_array.resize(inter_partition_size);
+        row_number_offset.resize(inter_partition_size + 1);
+        int buff_R = (int)buff.R;
+        MPI_Allgather(&buff_R, 1, MPI_INT, row_number_array.data(), 1, MPI_INT, inter_partition);
+        row_number_offset[0] = 0;
+        partial_sum(row_number_array.begin(), row_number_array.end(), row_number_offset.begin() + 1);
+        LOG_IF(INFO, process_id == monitor_id) << "row_number_offset.back() : " << row_number_offset.back();
+
+        // gather row offset
+        row_offset_global.resize(row_number_offset[inter_partition_size] + 1);
+        MPI_Allgatherv(buff.offsets, buff_R, MPI_UNSIGNED_LONG_LONG,
+                        row_offset_global.data(), row_number_array.data(), row_number_offset.data(), MPI_UNSIGNED_LONG_LONG, inter_partition);
+        for (size_t i = 0; i < inter_partition_size; ++i) {
+            for (size_t j = row_number_offset[i]; j < row_number_offset[i + 1]; ++j) {
+                row_offset_global[j] += data_size_offset[i];
             }
         }
+        row_offset_global.back() = data_size_offset.back();
+        LOG_IF(INFO, process_id == monitor_id) << "row_offset_global.size() " << row_offset_global.size()
+                                                << " row_offset_global.back() " << row_offset_global.back();
+        /*
+        if (process_id % 2 == 0) {
+            int error_cnt = 0;
+            for (int i = 0; i < buff_R; ++i) {
+                if (row_size_global[i + row_number_offset[inter_partition_id]] != buff.sizes[i])
+                    error_cnt++;
+            }
+            LOG(INFO) << "process_id : " << process_id << " error_cnt : " << error_cnt;
+            LOG_IF(ERROR, buff_R != row_number_offset[inter_partition_id + 1] - row_number_offset[inter_partition_id])
+                   << "row_number_offset wrong";
+            int acc_cnt = 0;
+            for (int i = row_number_offset[inter_partition_id]; i < row_number_offset[inter_partition_id + 1]; ++i) {
+                int r_offset = i - row_number_offset[inter_partition_id];
+                for (int j = row_offset_global[i]; j < row_offset_global[i + 1]; ++j) {
+                    int c_offset = j - row_offset_global[i];
+                    if (data_global[j].k != buff.data[buff.offsets[r_offset] + c_offset].k)
+                        acc_cnt++;
+                }
+            }
+            LOG(INFO) << "process_id : " << process_id << " acc_cnt : " << acc_cnt;
+        }
+         */
+    }
+
+    Row rowGlobal(const int global_row_idx) {
+        return Row{data_global.data() + row_offset_global[global_row_idx],
+                   data_global.data() + row_offset_global[global_row_idx + 1]};
     }
 
     double averageColumnSize() {
@@ -407,120 +567,16 @@ public:
         for (TIndex r = 0; r < row_size; r++) {
             auto row = buff.Get(r);
             avg += row.size();
-            //if (row.size() == 0) {
-            //    // Oops!
-            //    printf("pid : %d - the rbuff_key of row %d is empty\n", process_id, r);
-            //    exit(-1);
-            //}
+            LOG_IF(FATAL, row.size() == 0) << "pid : " << process_id
+                << " the rbuff_key of row " << r << " d is empty";
         }
         return avg / row_size;
     }
-};
 
-//template<class T>
-//class DCMDense {
-//public:
-//    // if partition_size were set to 1, it means every node obtain the same DCMDense matrix
-//    TCount partition_size, copy_size;
-//    // Notice : row_size are determined by the input file size, it is only part of the whole input data
-//    TCount row_size, column_size;
-//    TCount row_head, row_tail;
-//    PartitionType partition_type;
-//
-//    // MPI
-//    MPI_Comm intra_partition, inter_partition;
-//    int process_size, process_id;
-//    int partition_id, copy_id;
-//    // Thread
-//    int thread_size;
-//
-//    // TODO : !!! Jacobi -> Gauss-Seidel : rbuff and wbuff can be update together to accelerate the convergence
-//    vector<T> rbuff, wbuff;
-//    vector<T> row_marginal_partition, row_marginal;
-//    //T rtest, wtest;
-//
-//    // TODO : localMerge is empty now
-//    void localMerge();
-//
-//    void globalMerge() {
-//        /*
-//         * TODO : currently, T can only be int...
-//         * TODO : this MPI_Allreduce is centralized sync mechanism, we can test that if the decentralized solution
-//         * will get better performance, thus divide wbuff into the same number with intra_partition and perform an
-//         * alltoall operation
-//         */
-//        //printf("pid : %d allreduce wbuff_size : %lu, rbuff_size : %lu\n", process_id, wbuff.size(), rbuff.size());
-//        MPI_Allreduce(wbuff.data(), rbuff.data(), rbuff.size(), MPI_INT, MPI_SUM, intra_partition);
-//    }
-//
-//public:
-//    DCMDense(const int partition_size, const int copy_size, const int row_size, const int column_size,
-//                const int row_head, const int row_tail, PartitionType partition_type, const int process_size, const int process_id,
-//             const int thread_size) :
-//            partition_size(partition_size), copy_size(copy_size), row_size(row_size), column_size(column_size),
-//            row_head(row_head), row_tail(row_tail), partition_type(partition_type), process_size(process_size), process_id(process_id),
-//            thread_size(thread_size) {
-//        printf("pid : %d - process_size : %d, partition_size : %d, copy_size : %d\n",
-//               process_id, process_size, partition_size, copy_size);
-//        // TODO : I don't know why the below assert doesn't work...
-//        assert(process_size == partition_size * copy_size);
-//        assert(row_size == row_tail - row_head);
-//        /*
-//         * TODO : currently the split method only support split matrix vertical or horizontal
-//         * maybe we need to support user defined partition method in future
-//         */
-//        if (column_partition == partition_type) {
-//            partition_id = process_id % copy_size;
-//            copy_id = process_id / copy_size;
-//        } else if (row_partition == partition_type){
-//            partition_id = process_id / copy_size;
-//            copy_id = process_id % copy_size;
-//        }
-//        MPI_Comm_split(MPI_COMM_WORLD, partition_id, process_id, &intra_partition);
-//        MPI_Comm_split(MPI_COMM_WORLD, copy_id, process_id, &inter_partition);
-//        /*
-//        printf("pid : %d - partition_size : %d, copy_size : %d, row_size : %d, column_size : %d, process_size : %d, thread_size : %d\n",
-//               process_id, partition_size, copy_size, row_size, column_size, process_size, thread_size);
-//               */
-//        rbuff.resize(row_size * column_size);
-//        wbuff.resize(row_size * column_size);
-//        std::fill(rbuff.begin(), rbuff.end(), 0);
-//        std::fill(wbuff.begin(), wbuff.end(), 0);
-//        row_marginal_partition.resize(column_size);
-//        row_marginal.resize(column_size);
-//    }
-//
-//    T* row(const int local_row_idx) {
-//        return rbuff.data() + local_row_idx * column_size;
-//    }
-//
-//    void increase(const int local_row_idx, const int column_idx) {
-//        wbuff[local_row_idx * column_size + column_idx]++;
-//    }
-//
-//    void sync() {
-//        // merge threads
-//        //localMerge();
-//        // merge process
-//        globalMerge();
-//        std::fill(wbuff.begin(), wbuff.end(), 0);
-//    }
-//
-///*
-// * marginal all row into one row, for example ck = cwk.rowMarginal();
-// * Assumption : rowMarginal are always happened after sync()
-// */
-//    T *rowMarginal() {
-//        std::fill(row_marginal_partition.begin(), row_marginal_partition.end(), 0);
-//        for (TIndex r = 0; r < row_size; ++r) {
-//            for (TIndex k = 0; k < column_size; ++k){
-//                row_marginal_partition[k] += rbuff[r * column_size + k];
-//            }
-//        }
-//        MPI_Allreduce(row_marginal_partition.data(), row_marginal.data(), row_marginal.size(),
-//                      MPI_INT, MPI_SUM, inter_partition);
-//        return row_marginal.data();
-//    }
-//};
+    void show_time_elapse() {
+        LOG_IF(INFO, process_id == monitor_id) << "Local merge totally took " << local_merge_time_total << " s";
+        LOG_IF(INFO, process_id == monitor_id) << "Global merge totally took " << global_merge_time_total << " s";
+    }
+};
 
 #endif //LDA_DCM_H
