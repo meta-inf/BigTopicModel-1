@@ -7,7 +7,7 @@
 
 using namespace std;
 
-DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   // TODO
+DEFINE_bool(fix_random_seed, true, "Fix random seed for debugging");   
 DEFINE_bool(show_topics, false, "Display top K words in each topic");
 DEFINE_int32(show_topics_K, 10, "Display top K words in each topic");
 DEFINE_int32(n_sgld_phi, 2, "number of sgld iterations for phi");
@@ -22,7 +22,6 @@ DEFINE_int32(n_doc_batch, 60, "implemented");
 DEFINE_bool(psgld, true, "pSGLD with RMSProp for Phi");
 DEFINE_double(psgld_a, 0.95, "alpha in RMSProp");
 DEFINE_double(psgld_l, 1e-4, "lambda in pSGLD");
-DEFINE_bool(fix_alpha, false, "Use fixed symmetrical topic prior");    // TODO
 DEFINE_double(sgld_phi_a, 0.5, "SGLD learning rate parameter for Phi");
 DEFINE_double(sgld_phi_b, 100, "SGLD learning rate parameter for Phi");
 DEFINE_double(sgld_phi_c, 0.8, "SGLD learning rate parameter for Phi");
@@ -37,6 +36,7 @@ DEFINE_double(sig_eta, 4, "... for P(eta_{td}|alpha_t)");
 DEFINE_int32(report_every, 1, "Time in iterations between two consecutive reports");
 DEFINE_int32(dump_every, -1, "Time between dumps. <=0 -> never");
 
+DEFINE_int32(dcm_monitor_id, -1, "Monitor process for DCM. -1 - off");
 DEFINE_bool(_profile, false, "Show profiling output");
 DEFINE_bool(_loadphi, false, "Import parameter in Blei dtm's format; for single machine only");
 DEFINE_string(_loadphi_fmt, "/home/if/recycle_shift/dtm/dtm/dat/drun50/lda-seq/topic-%03d-TEP29-var-e-log-prob.dat", "");
@@ -49,7 +49,8 @@ DECLARE_string(dump_prefix);
 
 pDTM::BatchState::BatchState(LocalCorpus &corpus_, int n_max_batch, pDTM &p_):
     p(p_), corpus(corpus_),
-    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, p.procId, FLAGS_n_threads),
+    cdk(1, p.nProcCols, n_max_batch, p.N_topics, row_partition, p.nProcCols, 
+			p.procId, FLAGS_n_threads, LocalMergeStyle::separate, FLAGS_dcm_monitor_id),
     cwk((int)corpus_.docs.size() * p.N_topics, corpus_.vocab_e - corpus_.vocab_s, FLAGS_n_threads)
 {
     N_glob_vocab = p.N_glob_vocab; // Having problem putting them in the initializer list
