@@ -13,7 +13,7 @@
 #include "cm.h"
 #include "aliastable.h"
 
-class pDTM {
+class PDTM {
     static const int MAX_THREADS = 64;
 
 	MPI_Comm commRow;
@@ -37,10 +37,10 @@ class pDTM {
 	vector<rand_data> rd_data, rd_data_eta;
 
     struct BatchState {
-        BatchState(LocalCorpus &corpus, int n_max_batch, pDTM &par);
+        BatchState(LocalCorpus &corpus, int n_max_batch, PDTM &par);
         double dense_cwk_overhead; // FIXME
         int N_glob_vocab, N_topics, N_local_vocab;
-        pDTM &p;
+        PDTM &p;
         DCMSparse cdk;
         CMSparse cwk;                                                   // 2G / cols (train&test)
         Arr ck; // row marginal for cwk, (n_row_ep, n_topics)
@@ -66,7 +66,7 @@ class pDTM {
 
 public:
 
-	pDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
+	PDTM(LocalCorpus &&c_train, LocalCorpus &&c_test_held, LocalCorpus &&c_test_observed, Dict &&dict,
          int n_vocab_, int procId_, int nProcRows_, int nProcCols_);
 
 	void Infer();
