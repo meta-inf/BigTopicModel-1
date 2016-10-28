@@ -1,0 +1,76 @@
+// A version of SampleEta where work is distributed among procs.
+
+// In Infer() after `SampleEta`s:
+
+    vector<double> etaBuff(N_batch * size_t(corpus.ep_e - corpus.ep_s) * N_topics);
+        MPI_Barrier(commRow);
+        // Allgather eta for cur batch & update globEta. In parallel with SamplePhi.
+        threads[FLAGS_n_threads - 1] = thread([&]() {
+            vector<size_t> offs;
+            MPIHelpers::Allgatherv<double>(commRow, nProcCols, pColId, localEta.data(), offs, etaBuff);
+            int eb_i = 0;
+            for (const auto &d: batch) {
+                for (int i = 0; i < N_topics; ++i) {
+                    double nv = etaBuff[eb_i++];
+                    sumEta(d.first, i) += nv - globEta[d.first](d.second, i);
+                    globEta[d.first](d.second, i) = nv;
+                    if (isnan(nv)) {
+                        assert(false);
+                    }
+                }
+            }
+
+void pDTM::UpdateEta(int kTh, int nTh) {
+    // Init thread-local storage
+    static vector<double> eta_softmax_[MAX_THREADS];
+    if (eta_softmax_[kTh].size() < N_topics) {
+        eta_softmax_[kTh].resize(N_topics, 0.);
+    }
+    double *eta_softmax = eta_softmax_[kTh].data();
+
+    // Divide doc batch for local thread
+    size_t b_s, b_e;
+    divide_interval((size_t)0, localBatch.size(), kTh, nTh, b_s, b_e);
+
+    // Load localEta
+    for (size_t di = b_s; di < b_e; ++di) {
+        localEta.row(di) = globEta[localBatch[di].first].row(localBatch[di].second);
+        m_assert(localEta.row(di).hasNaN() == false); // FIXME
+    }
+
+    // do SGLD
+    NormalDistribution normal;
+    for (int _ = 0; _ < FLAGS_n_sgld_eta; ++_) {
+        int t = _ + iter * FLAGS_n_sgld_eta;
+        double eps = FLAGS_sgld_eta_a * (double)pow(FLAGS_sgld_eta_b + t, -FLAGS_sgld_eta_c);
+        double sq_eps = (double)sqrt(eps);
+
+        // Update all docs
+        for (int di = (int)b_s; di < b_e; ++di) {
+            int ep_di = localBatch[di].first;
+            double *eta = localEta.data() + di * N_topics;
+            auto cdk = this->cdk.row(di);
+            size_t cdk_sum = cva_row_sum(cdk);
+            softmax(eta, eta_softmax, N_topics);
+
+            // g_prior = 1 / sqr(sig_eta) * (alpha_t - eta)
+            // g_post = cdk - RowwSoftmax(eta_d) * sum(cdk)
+            // eta_d += N(0, eps) + eps/2 * (g_prior + g_post)
+
+            // 1. Accumulate all terms except cdk
+            double inv_sig_eta2 = 1. / sqr(FLAGS_sig_eta);
+            for (int i = 0; i + 1 < N_topics; ++i) { // Last term is clamped to 0
+                double g_prior = inv_sig_eta2 * (alpha(ep_di+1, i) - eta[i]);
+                double g_post2 = -eta_softmax[i] * cdk_sum;
+                eta[i] += normal(&rd_data[kTh]) * sq_eps + (eps / 2) * (g_prior + g_post2);
+                if (isnan(eta[i])) {
+                    assert(false);
+                }
+            }
+            // 2. Accumulate cdk
+            for (const auto &e: cdk) {
+                if (e.k != N_topics - 1) eta[e.k] += eps / 2 * e.v;
+            }
+        }
+    }
+}

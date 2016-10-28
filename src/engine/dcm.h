@@ -28,7 +28,7 @@ using std::vector;
  */
 // TODO: row sum should be size_t
 class DCMSparse {
-private:
+protected:
     /**
      * \var
      * process_size    :   the number of process in MPI_COMM_WORLD
@@ -311,20 +311,22 @@ public:
             partition_type(partition_type), process_size(process_size), process_id(process_id),
             thread_size(thread_size), buff(row_size), merged(row_size) {
         // TODO : max token number of each document
-        assert(process_size == partition_size * copy_size);
-        if (column_partition == partition_type) {
-            partition_id = process_id % partition_size;
-            copy_id = process_id / partition_size;
-        } else if (row_partition == partition_type) {
-            partition_id = process_id / copy_size;
-            copy_id = process_id % copy_size;
-        }
-        MPI_Comm_split(MPI_COMM_WORLD, partition_id, process_id, &intra_partition);
-        MPI_Comm_split(MPI_COMM_WORLD, copy_id, process_id, &inter_partition);
+        if (process_size != 1) {
+            assert(process_size == partition_size * copy_size);
+            if (column_partition == partition_type) {
+                partition_id = process_id % partition_size;
+                copy_id = process_id / partition_size;
+            } else if (row_partition == partition_type) {
+                partition_id = process_id / copy_size;
+                copy_id = process_id % copy_size;
+            }
+            MPI_Comm_split(MPI_COMM_WORLD, partition_id, process_id, &intra_partition);
+            MPI_Comm_split(MPI_COMM_WORLD, copy_id, process_id, &inter_partition);
         /*
         printf("pid : %d - partition_size : %d, copy_size : %d, row_size : %d, column_size : %d, process_size : %d, thread_size : %d\n",
                process_id, partition_size, copy_size, row_size, column_size, process_size, thread_size);
                */
+        }
 
         wbuff_thread.resize(thread_size);
         last_wbuff_thread_size.resize(thread_size);
@@ -375,23 +377,28 @@ public:
         localMerge();
         if (process_id == 0)
             std::cout << "Local merge took " << clk.toc() << std::endl;
-        //printf("pid : %d - local merge done\n", process_id);
-        // merge DCMSparse among the intra-partition
-        clk.tic();
-        globalMerge();
-        if (process_id == 0)
-            std::cout << "Global merge took " << clk.toc() << std::endl;
+
+        if (process_size > 1) {
+            //printf("pid : %d - local merge done\n", process_id);
+            // merge DCMSparse among the intra-partition
+            clk.tic();
+            globalMerge();
+            if (process_id == 0)
+                std::cout << "Global merge took " << clk.toc() << std::endl;
+        }
 
         for (int tid = 0; tid < thread_size; tid++)
             wbuff_thread[tid].reserve(last_wbuff_thread_size[tid] * 1.2);
 
-        //printf("pid : %d - global merge done\n", process_id);
-        size_t wbuff_thread_size = 0;
-        for (auto &v: wbuff_thread) wbuff_thread_size += v.capacity();
-        if (process_id == 0) {
-            printf("wbuff_thread %llu, buff %llu, merged %llu, recv_buff %llu\n",
-                   wbuff_thread_size * sizeof(Entry) / 1048576, buff.size() / 1048576,
-                   merged.size() / 1048576, recv_buff.capacity() * sizeof(SpEntry) / 1048576);
+        if (process_size > 1) {
+            //printf("pid : %d - global merge done\n", process_id);
+            size_t wbuff_thread_size = 0;
+            for (auto &v: wbuff_thread) wbuff_thread_size += v.capacity();
+            if (process_id == 0) {
+                printf("wbuff_thread %llu, buff %llu, merged %llu, recv_buff %llu\n",
+                       wbuff_thread_size * sizeof(Entry) / 1048576, buff.size() / 1048576,
+                       merged.size() / 1048576, recv_buff.capacity() * sizeof(SpEntry) / 1048576);
+            }
         }
     }
 

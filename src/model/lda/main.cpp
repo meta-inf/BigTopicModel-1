@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
 
     LOG(INFO) << "Rank " << process_id << " has " << num_docs << " docs, " << num_words << " words, " << train_corpus.size() / sizeof(int) << " tokens." << endl;
 
-    LDA lda(FLAGS_iter, FLAGS_K, FLAGS_alpha, FLAGS_beta, train_corpus, process_size, process_id, omp_get_max_threads(),
+    LDA lda(FLAGS_iter, FLAGS_K, FLAGS_alpha, FLAGS_beta, train_corpus, process_size, process_id, 1, // FIXME! omp_get_max_threads(),
             num_docs, num_words, FLAGS_doc_part, FLAGS_word_part);
     lda.Estimate();
 
